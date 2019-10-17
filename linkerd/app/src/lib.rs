@@ -27,7 +27,7 @@ use opencensus_proto::agent::common::v1 as oc;
 use std::net::SocketAddr;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use tokio::runtime::current_thread;
+use tokio_compat::runtime::current_thread;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, info_span, trace};
 use tracing_futures::Instrument;

@@ -52,6 +52,7 @@ pub struct ArcExecutor(Arc<dyn Executor<BoxSendFuture> + Send + Sync>);
 /// runtime, but for an ingress proxy, we would prefer the thread pool.
 pub enum MainRuntime {
     CurrentThread(current_thread::Runtime),
+    Compat(tokio_compat::runtime::current_thread::Runtime),
     ThreadPool(thread_pool::Runtime),
 }
 
@@ -224,6 +225,9 @@ impl MainRuntime {
             MainRuntime::ThreadPool(ref mut rt) => {
                 rt.spawn(future);
             }
+            MainRuntime::Compat(ref mut rt) => {
+                rt.spawn(future);
+            }
         };
         self
     }
@@ -234,11 +238,18 @@ impl MainRuntime {
         F: Future<Item = (), Error = ()> + Send + 'static,
     {
         match self {
+            MainRuntime::Compat(mut rt) => rt.block_on(shutdown_signal),
             MainRuntime::CurrentThread(mut rt) => rt.block_on(shutdown_signal),
             MainRuntime::ThreadPool(rt) => {
                 shutdown_signal.and_then(move |()| rt.shutdown_now()).wait()
             }
         }
+    }
+}
+impl From<tokio_compat::runtime::current_thread::Runtime> for MainRuntime {
+    fn from(rt: tokio_compat::runtime::current_thread::Runtime) -> Self {
+        debug!("creating tokio-compat single-threaded proxy");
+        MainRuntime::Compat(rt)
     }
 }
 

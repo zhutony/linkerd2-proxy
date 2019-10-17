@@ -10,3 +10,4 @@ description = "The main proxy executable"
 linkerd2-app = { path = "../linkerd/app" }
 linkerd2-signal = { path = "../linkerd/signal" }
 tokio = "0.1.14"
+tokio-compat = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/compat", default_features = false, features = ["rt-current-thread"] }

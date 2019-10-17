@@ -17,6 +17,7 @@ linkerd2-app-inbound = { path = "./inbound" }
 linkerd2-app-outbound = { path = "./outbound" }
 opencensus-proto = { path = "../../opencensus-proto" }
 tokio = "0.1.14"
+tokio-compat = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/compat", default_features = false, features = ["rt-current-thread"] }
 tracing = "0.1.9"
 tracing-futures = "0.1"
 

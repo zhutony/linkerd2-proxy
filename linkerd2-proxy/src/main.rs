@@ -6,7 +6,7 @@
 
 use linkerd2_app::Main;
 use linkerd2_signal as signal;
-use tokio::runtime::current_thread;
+use tokio_compat::runtime::current_thread;
 
 /// Loads configuration from the environment
 fn main() {
