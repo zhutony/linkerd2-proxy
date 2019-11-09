@@ -44,7 +44,7 @@ linkerd2-router = { path = "../../router" }
 linkerd2-stack = { path = "../../stack" }
 linkerd2-timeout = { path = "../../timeout" }
 linkerd2-trace-context = { path = "../../trace-context" }
-rand = "0.6"
+rand = { version = "0.7", features = ["small_rng"] }
 regex = "1.0.0"
 tokio = "0.1.14"
 tokio-timer = "0.2"
@@ -72,4 +72,4 @@ procinfo = "0.4.2"
 linkerd2-test-util = { path = "../../test-util" }
 linkerd2-proxy-api = { git = "https://github.com/linkerd/linkerd2-proxy-api", features = ["arbitrary"], tag = "v0.1.10" }
 prost-types = "0.5.0"
-quickcheck = { version = "0.8", default-features = false }
+quickcheck = { version = "0.9", default-features = false }
