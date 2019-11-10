@@ -15,8 +15,8 @@ use linkerd2_app_core::{
     http_request_l5d_override_dst_addr, http_request_orig_dst_addr,
     opencensus::proto::trace::v1 as oc,
     proxy::{
-        self, core::resolve::Resolve, discover, http, identity, resolve::map_endpoint, tap, tcp,
-        Server,
+        self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
+        tap, tcp, Server,
     },
     reconnect, serve,
     spans::SpanConverter,
@@ -215,7 +215,7 @@ impl<A: OrigDstAddr> Config<A> {
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
             let distributor = endpoint_stack
-                .push(http::fallback::layer(balancer_layer, orig_dst_router_layer))
+                .push(fallback::layer(balancer_layer, orig_dst_router_layer))
                 .serves::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
