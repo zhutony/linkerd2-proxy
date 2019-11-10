@@ -33,6 +33,7 @@ pub use self::{
     settings::Settings,
     version::Version,
 };
+pub use http::{Request, Response};
 pub use linkerd2_fallback as fallback;
 
 pub trait HasH2Reason {
