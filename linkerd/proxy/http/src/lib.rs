@@ -29,7 +29,6 @@ pub mod upgrade;
 mod version;
 
 pub use self::{
-    boxed::BoxedHttpService,
     client::Client,
     glue::{HttpBody as Body, HyperServerSvc},
     settings::Settings,

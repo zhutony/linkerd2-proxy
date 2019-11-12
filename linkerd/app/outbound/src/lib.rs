@@ -215,7 +215,10 @@ impl<A: OrigDstAddr> Config<A> {
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
             let distributor = endpoint_stack
-                .push(fallback::layer(balancer_layer, orig_dst_router_layer))
+                .push(fallback::layer(
+                    balancer_layer.boxed(),
+                    orig_dst_router_layer.boxed_clone(),
+                ))
                 .serves::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
