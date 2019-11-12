@@ -55,7 +55,7 @@ impl<L> Layers<L> {
         self.push(SpawnReadyLayer::new())
     }
 
-    pub fn boxed<M, T, A, B>(self) -> Layers<Pair<L, http::boxed::LayerBoxed<A, B>>>
+    pub fn boxed<M, T, A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
     where
         L: tower::layer::Layer<M>,
         M: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
@@ -64,18 +64,6 @@ impl<L> Layers<L> {
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::boxed())
-    }
-
-    pub fn boxed_clone<M, T, A, B>(self) -> Layers<Pair<L, http::boxed::LayerBoxedClone<A, B>>>
-    where
-        L: tower::layer::Layer<M>,
-        M: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
-        M::Service: Clone,
-        M::Error: Into<Error> + 'static,
-        A: 'static,
-        B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
-    {
-        self.push(http::boxed::Layer::boxed_clone())
     }
 }
 
@@ -128,7 +116,7 @@ impl<S> Stack<S> {
         self.push(TimeoutLayer::new(timeout))
     }
 
-    pub fn boxed<T, A, B>(self) -> Stack<http::boxed::MakeBoxed<S, A, B>>
+    pub fn boxed<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
     where
         A: 'static,
         S: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
@@ -137,17 +125,6 @@ impl<S> Stack<S> {
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::boxed())
-    }
-
-    pub fn boxed_clone<T, A, B>(self) -> Stack<http::boxed::MakeBoxedClone<S, A, B>>
-    where
-        A: 'static,
-        S: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
-        S::Error: Into<Error> + 'static,
-        S::Service: Clone + 'static,
-        B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
-    {
-        self.push(http::boxed::Layer::boxed_clone())
     }
 
     /// Validates that this stack serves T-typed targets.

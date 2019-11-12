@@ -162,7 +162,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(require_identity_on_endpoint::layer())
                 .push(trace::layer(|endpoint: &Endpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }));
+                }))
+                .serves::<Endpoint>();
 
             // A per-`dst::Route` layer that uses profile data to configure
             // a per-route layer.
@@ -215,11 +216,12 @@ impl<A: OrigDstAddr> Config<A> {
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
             let distributor = endpoint_stack
+                .serves::<Endpoint>()
+                .boxed()
                 .push(fallback::layer(
                     balancer_layer.boxed(),
-                    orig_dst_router_layer.boxed_clone(),
+                    orig_dst_router_layer.boxed(),
                 ))
-                .serves::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
                 ));
@@ -232,7 +234,9 @@ impl<A: OrigDstAddr> Config<A> {
             // 3. Creates a load balancer , configured by resolving the
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
+                .serves::<DstAddr>()
                 .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .makes::<DstAddr>()
                 .push(http::profiles::router::layer(
                     profiles_client,
                     dst_route_layer,
