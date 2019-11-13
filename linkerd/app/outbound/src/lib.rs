@@ -218,8 +218,8 @@ impl<A: OrigDstAddr> Config<A> {
             let distributor = endpoint_stack
                 .serves::<Endpoint>()
                 .push(fallback::layer(
-                    balancer_layer.box_body(),
-                    orig_dst_router_layer.box_body(),
+                    balancer_layer.boxed(),
+                    orig_dst_router_layer.boxed(),
                 ))
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),

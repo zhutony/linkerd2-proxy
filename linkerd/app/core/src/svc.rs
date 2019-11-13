@@ -55,12 +55,12 @@ impl<L> Layers<L> {
         self.push(SpawnReadyLayer::new())
     }
 
-    pub fn box_body<A, B>(self) -> Layers<Pair<L, http::box_body::Layer<A, B>>>
+    pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
     where
         A: 'static,
-        B: hyper::body::Payload<Data = http::box_body::Data, Error = Error> + 'static,
+        B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
-        self.push(http::box_body::Layer::new())
+        self.push(http::boxed::Layer::new())
     }
 }
 
@@ -113,13 +113,13 @@ impl<S> Stack<S> {
         self.push(TimeoutLayer::new(timeout))
     }
 
-    pub fn box_body<T, A, B>(self) -> Stack<http::box_body::Make<S, A, B>>
+    pub fn boxed<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
     where
         A: 'static,
         S: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
-        B: hyper::body::Payload<Data = http::box_body::Data, Error = Error> + 'static,
+        B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
-        self.push(http::box_body::Layer::new())
+        self.push(http::boxed::Layer::new())
     }
 
     /// Validates that this stack serves T-typed targets.
