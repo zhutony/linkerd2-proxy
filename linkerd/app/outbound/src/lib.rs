@@ -218,7 +218,7 @@ impl<A: OrigDstAddr> Config<A> {
             let distributor = endpoint_stack
                 .serves::<Endpoint>()
                 .push(fallback::layer(
-                    balancer_layer.boxed(),
+                    balancer_layer.clone().boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
                 .push(trace::layer(
@@ -330,13 +330,31 @@ impl<A: OrigDstAddr> Config<A> {
                 })))
                 .push(metrics.http_handle_time.layer());
 
-            let forward_tcp = tcp::Forward::new(
-                svc::stack(connect_stack)
-                    .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                        Endpoint::from(meta.addrs.target_addr())
-                    }))
-                    .into_inner(),
-            );
+            let forward_tcp = {
+                // The balancer layers can just be reused! Ah, the beauty of Layer...
+                //
+                // The other original dst router layer is currently--though
+                // probably not necessarily--http-specific. For now, let's just
+                // duplicate it and make it TCP-specific
+                let orig_dst_router_layer = svc::layers()
+                    .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                    .push(router::Layer::new(
+                        router::Config::new(router_capacity, router_max_idle_age),
+                        Endpoint::from_request,
+                    ));
+
+                tcp::Forward::new(
+                    svc::stack(connect_stack)
+                        .push(fallback::layer(
+                            balancer_layer.boxed(),
+                            orig_dst_router_layer.boxed(),
+                        ))
+                        .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                            Endpoint::from(meta.addrs.target_addr())
+                        }))
+                        .into_inner(),
+                )
+            };
 
             let proxy = Server::new(
                 TransportLabels,
