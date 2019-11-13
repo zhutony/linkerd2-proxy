@@ -49,11 +49,3 @@ debug = false
 
 [patch.crates-io]
 webpki = { git = "https://github.com/seanmonstar/webpki", branch = "cert-dns-names-0.21" }
-
-[patch."https://github.com/tower-rs/tower"]
-tower-balance = { git = "https://github.com/olix0r/tower", branch = "ver/ready-cache" }
-tower-load = { git = "https://github.com/olix0r/tower", branch = "ver/ready-cache" }
-tower-spawn-ready = { git = "https://github.com/olix0r/tower", branch = "ver/ready-cache" }
-
-[patch."https://github.com/linkerd/linkerd2-proxy-api"]
-linkerd2-proxy-api = { git = "https://github.com/olix0r/linkerd2-proxy-api", branch = "ver/rand-0.7" }
