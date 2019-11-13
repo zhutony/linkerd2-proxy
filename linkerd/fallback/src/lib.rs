@@ -2,6 +2,7 @@
 
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
+use tower::util::Either;
 use tracing::trace;
 
 /// A fallback layer composing two service builders.
@@ -10,24 +11,26 @@ use tracing::trace;
 /// an error matching a given predicate, the fallback future will attempt
 /// to call the secondary `MakeService`.
 #[derive(Clone, Debug)]
-pub struct Layer<A, B, P = fn(&Error) -> bool> {
+pub struct Layer<A, B, R, P = fn(&Error) -> bool> {
     primary: A,
     fallback: B,
     predicate: P,
+    _marker: std::marker::PhantomData<fn(R)>,
 }
 
-#[derive(Clone, Debug)]
-pub struct MakeSvc<A, B, P> {
+pub struct MakeSvc<A, B, P, R> {
     primary: A,
     fallback: B,
     predicate: P,
+    _marker: std::marker::PhantomData<fn(R)>,
 }
 
-pub struct MakeFuture<A, B, P, T>
+pub struct MakeFuture<A, B, P, T, R>
 where
     A: Future,
+    A::Item: tower::Service<R>,
     A::Error: Into<Error>,
-    B: tower::Service<T>,
+    B: tower::MakeService<T, R, Response = <A::Item as tower::Service<R>>::Response>,
 {
     fallback: B,
     target: Option<T>,
@@ -44,34 +47,36 @@ enum FallbackState<A, B, T> {
     Fallback(B),
 }
 
-pub fn layer<A, B>(primary: A, fallback: B) -> Layer<A, B> {
+pub fn layer<A, B, R>(primary: A, fallback: B) -> Layer<A, B, R> {
     let predicate: fn(&Error) -> bool = |_| true;
     Layer {
         primary,
         fallback,
         predicate,
+        _marker: std::marker::PhantomData,
     }
 }
 
 // === impl Layer ===
 
-impl<A, B> Layer<A, B> {
+impl<A, B, R> Layer<A, B, R> {
     /// Returns a `Layer` that uses the given `predicate` to determine whether
     /// to fall back.
-    pub fn with_predicate<P>(self, predicate: P) -> Layer<A, B, P>
+    pub fn with_predicate<P>(self, predicate: P) -> Layer<A, B, R, P>
     where
         P: Fn(&Error) -> bool + Clone,
     {
         Layer {
+            predicate,
             primary: self.primary,
             fallback: self.fallback,
-            predicate,
+            _marker: self._marker,
         }
     }
 
     /// Returns a `Layer` that falls back if the error or its source is of
     /// type `E`.
-    pub fn on_error<E>(self) -> Layer<A, B>
+    pub fn on_error<E>(self) -> Layer<A, B, R>
     where
         E: std::error::Error + 'static,
     {
@@ -79,39 +84,41 @@ impl<A, B> Layer<A, B> {
     }
 }
 
-impl<A, B, P, M> tower::layer::Layer<M> for Layer<A, B, P>
+impl<A, B, P, M, R> tower::layer::Layer<M> for Layer<A, B, R, P>
 where
     A: tower::layer::Layer<M>,
     B: tower::layer::Layer<M>,
     M: Clone,
     P: Fn(&Error) -> bool + Clone,
 {
-    type Service = MakeSvc<A::Service, B::Service, P>;
+    type Service = MakeSvc<A::Service, B::Service, P, R>;
 
     fn layer(&self, inner: M) -> Self::Service {
         MakeSvc {
             primary: self.primary.layer(inner.clone()),
             fallback: self.fallback.layer(inner),
             predicate: self.predicate.clone(),
+            _marker: self._marker,
         }
     }
 }
 
 // === impl MakeSvc ===
 
-impl<A, B, P, T> tower::Service<T> for MakeSvc<A, B, P>
+impl<A, B, P, T, R> tower::Service<T> for MakeSvc<A, B, P, R>
 where
-    A: tower::Service<T>,
+    A: tower::MakeService<T, R>,
+    A::MakeError: Into<Error>,
     A::Error: Into<Error>,
-    B: tower::Service<T> + Clone,
-    B::Response: Into<A::Response>,
+    B: tower::MakeService<T, R, Response = A::Response> + Clone,
+    B::MakeError: Into<Error>,
     B::Error: Into<Error>,
     P: Fn(&Error) -> bool + Clone,
     T: Clone,
 {
-    type Response = A::Response;
+    type Response = Either<A::Service, B::Service>;
     type Error = Error;
-    type Future = MakeFuture<A::Future, B, P, T>;
+    type Future = MakeFuture<A::Future, B, P, T, R>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.primary.poll_ready().map_err(Into::into)
@@ -122,21 +129,38 @@ where
             fallback: self.fallback.clone(),
             predicate: self.predicate.clone(),
             target: Some(target.clone()),
-            state: FallbackState::Primary(self.primary.call(target)),
+            state: FallbackState::Primary(self.primary.make_service(target)),
         }
     }
 }
 
-impl<A, B, P, T> Future for MakeFuture<A, B, P, T>
+impl<A, B, P, R> Clone for MakeSvc<A, B, P, R>
+where
+    A: Clone,
+    B: Clone,
+    P: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            primary: self.primary.clone(),
+            fallback: self.fallback.clone(),
+            predicate: self.predicate.clone(),
+            _marker: self._marker,
+        }
+    }
+}
+
+impl<A, B, P, T, R> Future for MakeFuture<A, B, P, T, R>
 where
     A: Future,
+    A::Item: tower::Service<R>,
     A::Error: Into<Error>,
-    B: tower::Service<T>,
-    B::Response: Into<A::Item>,
+    B: tower::MakeService<T, R, Response = <A::Item as tower::Service<R>>::Response>,
+    B::MakeError: Into<Error>,
     B::Error: Into<Error>,
     P: Fn(&Error) -> bool,
 {
-    type Item = A::Item;
+    type Item = Either<A::Item, B::Service>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -145,7 +169,7 @@ where
                 // We've called the primary service and are waiting for its
                 // future to complete.
                 FallbackState::Primary(ref mut f) => match f.poll() {
-                    Ok(r) => return Ok(r),
+                    Ok(r) => return Ok(r.map(Either::A)),
                     Err(error) => {
                         let error = error.into();
                         if (self.predicate)(&error) {
@@ -162,12 +186,12 @@ where
                 FallbackState::Waiting(ref mut target) => {
                     try_ready!(self.fallback.poll_ready().map_err(Into::into));
                     let target = target.take().expect("target should only be taken once");
-                    FallbackState::Fallback(self.fallback.call(target))
+                    FallbackState::Fallback(self.fallback.make_service(target))
                 }
                 // We've called the fallback service and are waiting for its
                 // future to complete.
                 FallbackState::Fallback(ref mut f) => {
-                    return f.poll().map(|a| a.map(Into::into)).map_err(Into::into);
+                    return f.poll().map(|a| a.map(Either::B)).map_err(Into::into)
                 }
             }
         }
