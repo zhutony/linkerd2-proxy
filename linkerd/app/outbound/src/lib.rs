@@ -218,8 +218,8 @@ impl<A: OrigDstAddr> Config<A> {
             let distributor = endpoint_stack
                 .serves::<Endpoint>()
                 .push(fallback::layer(
-                    balancer_layer.clone().boxed(),
-                    orig_dst_router_layer.boxed(),
+                    balancer_layer.clone().boxed_http(),
+                    orig_dst_router_layer.boxed_http(),
                 ))
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
@@ -346,8 +346,8 @@ impl<A: OrigDstAddr> Config<A> {
                 tcp::Forward::new(
                     svc::stack(connect_stack)
                         .push(fallback::layer(
-                            balancer_layer.boxed(),
-                            orig_dst_router_layer.boxed(),
+                            balancer_layer.boxed_tcp(),
+                            orig_dst_router_layer.boxed_tcp(),
                         ))
                         .push(svc::map_target::layer(|meta: tls::accept::Meta| {
                             Endpoint::from(meta.addrs.target_addr())

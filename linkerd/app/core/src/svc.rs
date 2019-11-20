@@ -1,4 +1,4 @@
-use crate::proxy::{buffer, http, pending};
+use crate::proxy::{buffer, http, pending, tcp};
 use crate::Error;
 pub use linkerd2_router::Make;
 pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Shared};
@@ -55,12 +55,16 @@ impl<L> Layers<L> {
         self.push(SpawnReadyLayer::new())
     }
 
-    pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
+    pub fn boxed_http<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
     where
         A: 'static,
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::new())
+    }
+
+    pub fn boxed_tcp<C>(self) -> Layers<Pair<L, tcp::boxed::Layer<C>>> {
+        self.push(tcp::boxed::Layer::new())
     }
 }
 
@@ -113,7 +117,7 @@ impl<S> Stack<S> {
         self.push(TimeoutLayer::new(timeout))
     }
 
-    pub fn boxed<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
+    pub fn boxed_http<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
     where
         A: 'static,
         S: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,

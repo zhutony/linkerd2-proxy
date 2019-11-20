@@ -3,18 +3,7 @@ use linkerd2_error::Error;
 
 pub type Data = hyper::body::Chunk;
 pub type Response = http::Response<Payload>;
-pub type ResponseFuture = Box<dyn Future<Item = Response, Error = Error> + Send + 'static>;
-
-pub struct BoxedService<A>(
-    Box<
-        dyn tower::Service<
-                http::Request<A>,
-                Response = Response,
-                Error = Error,
-                Future = ResponseFuture,
-            > + Send,
-    >,
-);
+pub type BoxHttpService<A> = tower::util::BoxService<http::Request<A>, Response, Error>;
 
 pub struct Layer<A, B> {
     _marker: std::marker::PhantomData<fn(A) -> B>,
@@ -25,18 +14,27 @@ pub struct Make<M, A, B> {
     _marker: std::marker::PhantomData<fn(A) -> B>,
 }
 
+struct Inner<S, A, B> {
+    service: S,
+    _marker: std::marker::PhantomData<fn(A) -> B>,
+}
+
+struct InnerFuture<F, B> {
+    future: F,
+    _marker: std::marker::PhantomData<fn() -> B>,
+}
+
+pub struct Payload {
+    inner: Box<dyn hyper::body::Payload<Data = Data, Error = Error> + Send + 'static>,
+}
+
+struct NoPayload;
+
+// === impl Layer ===
+
 impl<A, B> Clone for Layer<A, B> {
     fn clone(&self) -> Self {
         Self {
-            _marker: self._marker,
-        }
-    }
-}
-
-impl<M: Clone, A, B> Clone for Make<M, A, B> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
             _marker: self._marker,
         }
     }
@@ -65,6 +63,8 @@ impl<M, A, B> tower::layer::Layer<M> for Layer<A, B> {
     }
 }
 
+// === impl Make ===
+
 impl<T, M, A, B> tower::Service<T> for Make<M, A, B>
 where
     A: 'static,
@@ -74,61 +74,49 @@ where
     <M::Service as tower::Service<http::Request<A>>>::Future: Send + 'static,
     B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
 {
-    type Response = BoxedService<A>;
+    type Response = BoxHttpService<A>;
     type Error = M::MakeError;
-    type Future = future::Map<M::Future, fn(M::Service) -> BoxedService<A>>;
+    type Future = future::Map<M::Future, fn(M::Service) -> Self::Response>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.inner.poll_ready()
     }
 
     fn call(&mut self, target: T) -> Self::Future {
-        self.inner.make_service(target).map(BoxedService::new)
+        self.inner.make_service(target).map(Inner::boxed)
     }
 }
 
-struct Inner<S, A, B> {
-    service: S,
-    _marker: std::marker::PhantomData<fn(A) -> B>,
+impl<M: Clone, A, B> Clone for Make<M, A, B> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _marker: self._marker,
+        }
+    }
 }
 
-struct InnerFuture<F, B> {
-    future: F,
-    _marker: std::marker::PhantomData<fn() -> B>,
-}
+// === impl Inner ===
 
-pub struct Payload {
-    inner: Box<dyn hyper::body::Payload<Data = Data, Error = Error> + Send + 'static>,
-}
-
-struct NoPayload;
-
-impl<A: 'static> BoxedService<A> {
-    fn new<S, B>(service: S) -> Self
+impl<S, A, B> Inner<S, A, B>
+where
+    A: 'static,
+    S: tower::Service<http::Request<A>, Response = http::Response<B>>,
+    S::Error: Into<Error> + 'static,
+    S::Future: Send + 'static,
+    B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+{
+    fn boxed(service: S) -> BoxHttpService<A>
     where
         S: tower::Service<http::Request<A>, Response = http::Response<B>> + Send + 'static,
         S::Future: Send + 'static,
         S::Error: Into<Error> + 'static,
         B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
     {
-        BoxedService(Box::new(Inner {
+        tower::util::BoxService::new(Inner {
             service,
             _marker: std::marker::PhantomData,
-        }))
-    }
-}
-
-impl<A> tower::Service<http::Request<A>> for BoxedService<A> {
-    type Response = Response;
-    type Error = Error;
-    type Future = ResponseFuture;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.0.poll_ready()
-    }
-
-    fn call(&mut self, req: http::Request<A>) -> Self::Future {
-        self.0.call(req)
+        })
     }
 }
 
@@ -141,20 +129,30 @@ where
 {
     type Response = Response;
     type Error = Error;
-    type Future = ResponseFuture;
+    type Future = InnerFuture<S::Future, B>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.service.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, req: http::Request<A>) -> Self::Future {
-        let future = self.service.call(req);
-        Box::new(InnerFuture {
-            future,
+        Self::Future {
+            future: self.service.call(req),
             _marker: std::marker::PhantomData,
-        })
+        }
     }
 }
+
+impl<S: Clone, A, B> Clone for Inner<S, A, B> {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+            _marker: self._marker,
+        }
+    }
+}
+
+// === impl InnerFuture ===
 
 impl<F, B> Future for InnerFuture<F, B>
 where
@@ -173,6 +171,8 @@ where
         Ok(rsp.into())
     }
 }
+
+// === impl Payload ===
 
 impl Default for Payload {
     fn default() -> Self {
@@ -199,6 +199,8 @@ impl hyper::body::Payload for Payload {
     }
 }
 
+// === impl NoPayload ===
+
 impl hyper::body::Payload for NoPayload {
     type Data = Data;
     type Error = Error;
@@ -213,14 +215,5 @@ impl hyper::body::Payload for NoPayload {
 
     fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, Self::Error> {
         Ok(None.into())
-    }
-}
-
-impl<S: Clone, A, B> Clone for Inner<S, A, B> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-            _marker: self._marker,
-        }
     }
 }
