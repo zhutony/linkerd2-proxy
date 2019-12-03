@@ -48,4 +48,5 @@ debug = false
 debug = false
 
 [patch.crates-io]
+h2 = { git = "https://github.com/hyperium/h2", branch = "ver/0.1.x-debug-flow" }
 webpki = { git = "https://github.com/seanmonstar/webpki", branch = "cert-dns-names-0.21" }
