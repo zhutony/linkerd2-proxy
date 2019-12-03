@@ -10,6 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+// TODO remove me
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
     In,

@@ -1,16 +1,21 @@
-use futures::{try_ready, Future, Poll};
+use futures::{future, try_ready, Future, Poll};
 use linkerd2_duplex::Duplex;
 use linkerd2_error::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
 
-pub fn forward<C>(connect: C) -> Forward<C> {
-    Forward { connect }
+#[derive(Clone, Debug)]
+pub struct Layer(());
+
+#[derive(Clone, Debug)]
+pub struct MakeForward<C> {
+    connect: C,
 }
 
 #[derive(Clone, Debug)]
-pub struct Forward<C> {
+pub struct Forward<C, T> {
     connect: C,
+    target: T,
 }
 
 pub enum ForwardFuture<I, F: Future> {
@@ -18,14 +23,45 @@ pub enum ForwardFuture<I, F: Future> {
     Duplex(Duplex<I, F::Item>),
 }
 
-impl<C> Forward<C> {
-    pub fn new(connect: C) -> Self {
-        Self { connect }
+impl Layer {
+    pub fn new() -> Self {
+        Layer(())
     }
 }
 
-impl<C, T, I> Service<(T, I)> for Forward<C>
+impl<C> tower::layer::Layer<C> for Layer {
+    type Service = MakeForward<C>;
+
+    fn layer(&self, connect: C) -> Self::Service {
+        Self::Service { connect }
+    }
+}
+
+impl<C, T> Service<T> for MakeForward<C>
 where
+    C: tower::Service<T> + Clone,
+    C::Error: Into<Error>,
+    C::Response: AsyncRead + AsyncWrite,
+{
+    type Response = Forward<C, T>;
+    type Error = Error;
+    type Future = future::FutureResult<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(().into())
+    }
+
+    fn call(&mut self, target: T) -> Self::Future {
+        future::ok(Forward {
+            connect: self.connect.clone(),
+            target,
+        })
+    }
+}
+
+impl<C, T, I> Service<I> for Forward<C, T>
+where
+    T: Clone,
     C: Service<T>,
     C::Error: Into<Error>,
     C::Response: AsyncRead + AsyncWrite,
@@ -39,10 +75,10 @@ where
         self.connect.poll_ready().map_err(Into::into)
     }
 
-    fn call(&mut self, (meta, io): (T, I)) -> Self::Future {
+    fn call(&mut self, io: I) -> Self::Future {
         ForwardFuture::Connect {
             io: Some(io),
-            connect: self.connect.call(meta),
+            connect: self.connect.call(self.target.clone()),
         }
     }
 }

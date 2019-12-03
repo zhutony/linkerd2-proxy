@@ -10,6 +10,9 @@ publish = false
 futures = "0.1"
 linkerd2-duplex = { path = "../../duplex" }
 linkerd2-error = { path = "../../error" }
+rand = { version = "0.7", features = ["small_rng"] }
 tokio = "0.1.14"
 tower = "0.1"
+tower-balance = { git = "https://github.com/tower-rs/tower" }
+tower-discover = "0.1"
 tower-load = { git = "https://github.com/tower-rs/tower" }

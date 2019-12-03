@@ -151,7 +151,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::strip_header::response::layer(L5D_REMOTE_IP))
                 .push(http::strip_header::response::layer(L5D_SERVER_ID))
                 .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                // disabled due to information leagkage
+                // disabled due to information leakage
                 //.push(add_remote_ip_on_rsp::layer())
                 //.push(add_server_id_on_rsp::layer())
                 .push(orig_proto_upgrade::layer())
@@ -201,15 +201,17 @@ impl<A: OrigDstAddr> Config<A> {
                     Endpoint::from_request,
                 ));
 
+            let discover_layer = {
+                const BUFFER_CAPACITY: usize = 2;
+                let endpoints = map_endpoint::Resolve::new(endpoint::FromMetadata, resolve);
+                discover::Layer::new(BUFFER_CAPACITY, endpoints)
+            };
+
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
-            const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 2;
             let balancer_layer = svc::layers()
                 .push_spawn_ready()
-                .push(discover::Layer::new(
-                    DISCOVER_UPDATE_BUFFER_CAPACITY,
-                    map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
-                ))
+                .push(discover_layer.clone())
                 .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY));
 
             // If the balancer fails to be created, i.e., because it is unresolvable,
@@ -330,31 +332,24 @@ impl<A: OrigDstAddr> Config<A> {
                 })))
                 .push(metrics.http_handle_time.layer());
 
-            let forward_tcp = {
-                // The balancer layers can just be reused! Ah, the beauty of Layer...
-                //
-                // The other original dst router layer is currently--though
-                // probably not necessarily--http-specific. For now, let's just
-                // duplicate it and make it TCP-specific
-                let orig_dst_router_layer = svc::layers()
-                    .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
-                    .push(router::Layer::new(
-                        router::Config::new(router_capacity, router_max_idle_age),
-                        Endpoint::from_request,
-                    ));
-
-                tcp::Forward::new(
-                    svc::stack(connect_stack)
-                        .push(fallback::layer(
-                            balancer_layer.boxed_tcp(),
-                            orig_dst_router_layer.boxed_tcp(),
-                        ))
-                        .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                            Endpoint::from(meta.addrs.target_addr())
-                        }))
-                        .into_inner(),
-                )
-            };
+            let forward_tcp = svc::stack(connect_stack)
+                .push(tcp::forward::Layer::new())
+                .push(fallback::layer(
+                    // Try to discover each destination.
+                    svc::layers()
+                        .push_spawn_ready()
+                        .push(discover_layer)
+                        .push(tcp::balance::Layer::new())
+                        .boxed_tcp(),
+                    svc::layers().boxed_tcp(),
+                ))
+                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .push(router::Layer::new(
+                    router::Config::new(router_capacity, router_max_idle_age),
+                    |(meta, _): &(tls::accept::Meta, _)| Some(meta.addrs.target_addr()),
+                ))
+                .into_inner()
+                .make();
 
             let proxy = Server::new(
                 TransportLabels,
