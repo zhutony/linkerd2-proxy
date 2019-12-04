@@ -1,5 +1,4 @@
 use futures::{try_ready, Future, Poll};
-use tower_service as svc;
 
 pub fn layer<L>(per_make: L) -> Layer<L> {
     Layer(per_make)
@@ -30,10 +29,10 @@ impl<M, L: Clone> super::Layer<M> for Layer<L> {
     }
 }
 
-impl<T, L, M> svc::Service<T> for PerMake<L, M>
+impl<T, L, M> tower::Service<T> for PerMake<L, M>
 where
     L: super::Layer<M::Response> + Clone,
-    M: svc::Service<T>,
+    M: tower::Service<T>,
 {
     type Response = L::Service;
     type Error = M::Error;

@@ -167,7 +167,10 @@ impl<A: OrigDstAddr> Config<A> {
             //    `RecognizeEndpoint` can use the value.
             let dst_stack = svc::stack(svc::Shared::new(endpoint_router))
                 .push(insert::target::layer())
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .push_buffer_pending::<DstAddr, _, _>(
+                    buffer.max_in_flight,
+                    DispatchDeadline::extract,
+                )
                 .push(profiles::router::layer(profiles_client, dst_route_layer))
                 .push(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(
@@ -220,7 +223,8 @@ impl<A: OrigDstAddr> Config<A> {
                             .or_else(|| http_request_host_addr(req).ok())
                             .or_else(|| http_request_orig_dst_addr(req).ok())
                             .map(|addr| {
-                                DstAddr::inbound(addr, settings::Settings::from_request(req))
+                                DstAddr::inbound(addr)
+                                    .with_http(settings::Settings::from_request(req))
                             });
                         debug!(dst.logical = ?dst);
                         dst
@@ -269,13 +273,13 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer())
                 .serves::<tls::accept::Meta>();
 
-            let forward_tcp = tcp::Forward::new(
-                svc::stack(connect_stack)
-                    .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                        Endpoint::from(meta.addrs.target_addr())
-                    }))
-                    .into_inner(),
-            );
+            let forward_tcp = svc::stack(connect_stack)
+                .push(tcp::forward::Layer::new())
+                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                    Endpoint::from(meta.addrs.target_addr())
+                }))
+                .push(svc::make_tuple::Layer::new())
+                .into_inner();
 
             let server = Server::new(
                 TransportLabels,

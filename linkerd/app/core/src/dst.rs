@@ -110,22 +110,29 @@ impl AsRef<Addr> for DstAddr {
 }
 
 impl DstAddr {
-    pub fn outbound(addr: Addr, http_settings: settings::Settings) -> Self {
+    pub fn outbound(addr: impl Into<Addr>) -> Self {
+        let addr: Addr = addr.into();
         DstAddr {
             dst_logical: addr.clone(),
             dst_concrete: addr,
             direction: Direction::Out,
-            http_settings,
+            http_settings: settings::Settings::NotHttp,
         }
     }
 
-    pub fn inbound(addr: Addr, http_settings: settings::Settings) -> Self {
+    pub fn inbound(addr: impl Into<Addr>) -> Self {
+        let addr: Addr = addr.into();
         DstAddr {
             dst_logical: addr.clone(),
             dst_concrete: addr,
             direction: Direction::In,
-            http_settings,
+            http_settings: settings::Settings::NotHttp,
         }
+    }
+
+    pub fn with_http(mut self, http_settings: settings::Settings) -> Self {
+        self.http_settings = http_settings;
+        self
     }
 
     pub fn direction(&self) -> Direction {

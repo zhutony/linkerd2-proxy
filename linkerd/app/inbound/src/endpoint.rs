@@ -174,10 +174,9 @@ mod tests {
 
     fn dst_addr(req: &mut http::Request<()>) {
         use linkerd2_app_core::{dst::DstAddr, Addr};
-        req.extensions_mut().insert(DstAddr::inbound(
-            Addr::Socket(([0, 0, 0, 0], 0).into()),
-            Settings::Http2,
-        ));
+        req.extensions_mut().insert(
+            DstAddr::inbound(Addr::Socket(([0, 0, 0, 0], 0).into())).with_http(Settings::Http2),
+        );
     }
 
     const TLS_DISABLED: tls::PeerIdentity = Conditional::None(tls::ReasonForNoIdentity::Disabled);

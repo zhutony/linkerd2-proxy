@@ -1,5 +1,5 @@
 use crate::per_make;
-pub use tower_layer::Layer;
+pub use tower::layer::Layer;
 
 /// Make a `Layer` from a closure.
 pub fn mk<F>(f: F) -> LayerFn<F> {

@@ -1,11 +1,13 @@
 use crate::proxy::{buffer, http, pending, tcp};
 use crate::Error;
 pub use linkerd2_router::Make;
-pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Shared};
+pub use linkerd2_stack::{
+    self as stack, layer, make_tuple, map_request, map_target, Layer, LayerExt, Shared,
+};
 pub use linkerd2_timeout::stack as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
-use tower::limit::concurrency::ConcurrencyLimitLayer;
+use tower::limit::concurrency::{ConcurrencyLimit, ConcurrencyLimitLayer};
 use tower::load_shed::LoadShedLayer;
 use tower::timeout::TimeoutLayer;
 pub use tower::util::{Either, Oneshot};
@@ -89,23 +91,33 @@ impl<S> Stack<S> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer_pending<D, Req>(
+    pub fn push_buffer_pending<T, Req, D>(
         self,
         bound: usize,
         d: D,
     ) -> Stack<buffer::Make<pending::MakePending<S>, D, Req>>
     where
-        D: buffer::Deadline<Req>,
+        T: Send + Sync + 'static,
         Req: Send + 'static,
+        D: buffer::Deadline<Req>,
+        S: MakeService<T, Req>,
+        S::Error: Into<Error>,
+        S::Service: Send + 'static,
+        <S::Service as Service<Req>>::Future: Send,
+        buffer::Make<pending::MakePending<S>, D, Req>: Make<T>,
     {
         self.push_pending().push(buffer::layer(bound, d))
+    }
+
+    pub fn map_requests<I, O>(self, map: fn(I) -> O) -> Stack<map_request::Make<S, I, O>> {
+        self.push(map_request::Layer::new(map))
     }
 
     pub fn push_spawn_ready(self) -> Stack<tower_spawn_ready::MakeSpawnReady<S>> {
         self.push(SpawnReadyLayer::new())
     }
 
-    pub fn push_concurrency_limit(self, max: usize) -> Stack<tower::limit::ConcurrencyLimit<S>> {
+    pub fn push_concurrency_limit(self, max: usize) -> Stack<ConcurrencyLimit<S>> {
         self.push(ConcurrencyLimitLayer::new(max))
     }
 

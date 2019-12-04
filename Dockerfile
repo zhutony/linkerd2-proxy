@@ -33,4 +33,4 @@ RUN if [ -n "$PROXY_UNOPTIMIZED" ]; \
 FROM $RUNTIME_IMAGE as runtime
 WORKDIR /linkerd
 COPY --from=build /usr/src/linkerd2-proxy/target/linkerd2-proxy /usr/lib/linkerd/linkerd2-proxy
-ENV LINKERD2_PROXY_LOG=warn,linkerd2_proxy=info
+ENV LINKERD2_PROXY_LOG=warn,linkerd2=debug,h2=debug,h2::proto::streams::flow_control=trace

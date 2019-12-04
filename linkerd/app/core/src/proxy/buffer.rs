@@ -122,7 +122,7 @@ impl<M: Clone, D: Clone, Req> Clone for Make<M, D, Req> {
 
 impl<T, M, D, Req> svc::Service<T> for Make<M, D, Req>
 where
-    T: fmt::Display + Clone + Send + Sync + 'static,
+    T: Send + Sync + 'static,
     M: svc::Service<T>,
     M::Response: svc::Service<Req> + Send + 'static,
     M::Error: Into<Error>,
@@ -153,7 +153,7 @@ where
 
 impl<T, M, D, Req> rt::Make<T> for Make<M, D, Req>
 where
-    T: fmt::Display + Clone + Send + Sync + 'static,
+    T: Send + Sync + 'static,
     M: rt::Make<T>,
     M::Value: svc::Service<Req> + Send + 'static,
     <M::Value as svc::Service<Req>>::Future: Send,
@@ -176,7 +176,7 @@ impl<M, D, Req> Make<M, D, Req> {
     /// Creates a buffer immediately.
     pub fn make<T>(&self, target: T) -> Enqueue<M::Value, D, Req>
     where
-        T: fmt::Display + Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
         M: rt::Make<T>,
         M::Value: svc::Service<Req> + Send + 'static,
         <M::Value as svc::Service<Req>>::Future: Send,

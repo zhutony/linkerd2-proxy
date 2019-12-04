@@ -1,5 +1,4 @@
 use futures::Poll;
-use tower_service as svc;
 
 pub fn layer<T, M>(map_target: M) -> Layer<M>
 where
@@ -23,7 +22,7 @@ pub struct Stack<S, M> {
     map_target: M,
 }
 
-impl<S, M: Clone> tower_layer::Layer<S> for Layer<M> {
+impl<S, M: Clone> tower::layer::Layer<S> for Layer<M> {
     type Service = Stack<S, M>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -34,9 +33,9 @@ impl<S, M: Clone> tower_layer::Layer<S> for Layer<M> {
     }
 }
 
-impl<T, S, M> svc::Service<T> for Stack<S, M>
+impl<T, S, M> tower::Service<T> for Stack<S, M>
 where
-    S: svc::Service<M::Target>,
+    S: tower::Service<M::Target>,
     M: MapTarget<T>,
 {
     type Response = S::Response;

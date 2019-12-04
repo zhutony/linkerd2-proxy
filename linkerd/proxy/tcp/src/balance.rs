@@ -13,7 +13,7 @@ pub struct Layer<I> {
 
 /// Resolves `T` typed targets to balance requests over `M`-typed endpoint stacks.
 pub struct MakeSvc<M, I> {
-    inner: M,
+    make_discover: M,
     _marker: std::marker::PhantomData<fn(I)>,
 }
 
@@ -30,9 +30,9 @@ impl<I> Layer<I> {
 impl<M, I> tower::layer::Layer<M> for Layer<I> {
     type Service = MakeSvc<M, I>;
 
-    fn layer(&self, inner: M) -> Self::Service {
+    fn layer(&self, make_discover: M) -> Self::Service {
         MakeSvc {
-            inner,
+            make_discover,
             _marker: self._marker,
         }
     }
@@ -61,11 +61,11 @@ where
     type Future = future::Map<M::Future, fn(M::Response) -> Self::Response>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
+        self.make_discover.poll_ready()
     }
 
     fn call(&mut self, target: T) -> Self::Future {
-        self.inner.call(target).map(|d| {
+        self.make_discover.call(target).map(|d| {
             Balance::new(
                 PendingRequestsDiscover::new(d, NoInstrument),
                 SmallRng::from_entropy(),
@@ -77,7 +77,7 @@ where
 impl<M: Clone, I> Clone for MakeSvc<M, I> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            make_discover: self.make_discover.clone(),
             _marker: self._marker,
         }
     }

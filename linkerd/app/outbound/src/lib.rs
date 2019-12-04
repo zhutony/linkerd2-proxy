@@ -257,7 +257,8 @@ impl<A: OrigDstAddr> Config<A> {
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
                         req.extensions().get::<Addr>().cloned().map(|addr| {
-                            DstAddr::outbound(addr, http::settings::Settings::from_request(req))
+                            DstAddr::outbound(addr)
+                                .with_http(http::settings::Settings::from_request(req))
                         })
                     },
                 ))
@@ -318,6 +319,7 @@ impl<A: OrigDstAddr> Config<A> {
             // Instantiates an HTTP service for each `tls::accept::Meta` using the
             // shared `addr_router`. The `tls::accept::Meta` is stored in the request's
             // extensions so that it can be used by the `addr_router`.
+            let dispatch_timeout = buffer.dispatch_timeout;
             let server_stack = svc::stack(svc::Shared::new(admission_control))
                 .push(http::insert::layer(move || {
                     DispatchDeadline::after(buffer.dispatch_timeout)
@@ -335,18 +337,28 @@ impl<A: OrigDstAddr> Config<A> {
             let forward_tcp = svc::stack(connect_stack)
                 .push(tcp::forward::Layer::new())
                 .push(fallback::layer(
-                    // Try to discover each destination.
                     svc::layers()
                         .push_spawn_ready()
                         .push(discover_layer)
                         .push(tcp::balance::Layer::new())
                         .boxed_tcp(),
-                    svc::layers().boxed_tcp(),
+                    svc::layers()
+                        .push(svc::map_target::layer(|dst: DstAddr| {
+                            Endpoint::from(dst.dst_concrete().socket_addr().unwrap())
+                        }))
+                        .boxed_tcp(),
                 ))
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .serves::<DstAddr>()
+                .map_requests(|(_, io)| io);
+
+            let forward_tcp = forward_tcp
+                .push_buffer_pending(buffer.max_in_flight, dispatch_timeout)
+                .makes::<DstAddr>()
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
-                    |(meta, _): &(tls::accept::Meta, _)| Some(meta.addrs.target_addr()),
+                    |(meta, _): &(tls::accept::Meta, _)| {
+                        Some(DstAddr::outbound(meta.addrs.target_addr()))
+                    },
                 ))
                 .into_inner()
                 .make();
