@@ -52,7 +52,7 @@ impl Config {
                     .push(tls::client::layer(identity))
                     .push_timeout(control.connect.timeout)
                     // TODO: perhaps rename from "control" to "grpc"
-                    .push(control::client::layer())
+                    .push(control::client::layer(control.connect.h2_settings))
                     .push(control::resolve::layer(dns.clone()))
                     // TODO: we should have metrics of some kind, but the standard
                     // HTTP metrics aren't useful for a client where we never read

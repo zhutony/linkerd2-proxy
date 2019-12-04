@@ -325,12 +325,12 @@ pub mod client {
 
     // === impl Layer ===
 
-    pub fn layer<C, B>() -> impl svc::Layer<C, Service = Client<C, B>> + Copy
+    pub fn layer<C, B>(settings: H2Settings) -> impl svc::Layer<C, Service = Client<C, B>> + Copy
     where
         http::h2::Connect<C, B>: svc::Service<Target>,
     {
-        svc::layer::mk(|mk_conn| {
-            let inner = http::h2::Connect::new(mk_conn, H2Settings::default());
+        svc::layer::mk(move |mk_conn| {
+            let inner = http::h2::Connect::new(mk_conn, settings);
             Client { inner }
         })
     }

@@ -128,7 +128,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                 let svc = svc::stack(connect::svc(dst.control.connect.keepalive))
                     .push(tls::client::layer(identity.local()))
                     .push_timeout(dst.control.connect.timeout)
-                    .push(control::client::layer())
+                    .push(control::client::layer(dst.control.connect.h2_settings))
                     .push(control::resolve::layer(dns))
                     .push(reconnect::layer({
                         let backoff = dst.control.connect.backoff;

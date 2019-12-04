@@ -47,7 +47,7 @@ impl Config {
                         certify.trust_anchors.clone(),
                     )))
                     .push_timeout(control.connect.timeout)
-                    .push(control::client::layer())
+                    .push(control::client::layer(control.connect.h2_settings))
                     .push(control::resolve::layer(dns))
                     .push(reconnect::layer({
                         let backoff = control.connect.backoff;
