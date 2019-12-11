@@ -68,7 +68,7 @@ This bug _shouldn't_ cause the behavior we've observed, since
 this should not cause evictions to stop. The task should evict all of its
 inner services and then just stay around in the executor forever.
 
-#### Buffer Worker task
+#### `tower::buffer::Worker` task
 
 Every router in the proxy has a buffer inside of it. This is necessary
 because the services within a router must be ready to serve requests
@@ -76,8 +76,50 @@ immediately (i.e. it must not be NotReady); so we need a buffer to queue
 requests while the inner service is initialized.
 
 So, is it possible for the buffer to leak its spawned worker? Turns out, yes;
-but it's sort of by design. Let's dig in...
+but it's sort of by design:
 
-The buffer::Worker future holds the inner `Service`
+`buffer::Worker` holds the inner `Service` and an `mpsc::Receiver` of
+requests. As the worker task polled, requests are taken from the mpsc and
+dispatched to the service. However, this must take into account the inner
+service's readiness. If the inner service isn't ready, we're stuck. We can't
+process any more requests or determine whether the mpsc's senders have
+closed. But even if we could detect that the Buffer's senders have been
+dropped, what would we do if we still had requests in the queue to be
+processed? Really, they should be processed to completion.
 
-[buffer-hangup]: https://github.com/tower-rs/tower/compare/v0.1.x...olix0r:ver/buffer-hangup?expand=1
+So, what buffers in the proxy wrap a service that could get stuck in an
+unready state indefinitely?
+
+#### Balancer exhaustion vs Buffers
+
+The service-discovery-informed load balancing layer is the prime suspect. It
+seems almost obvious that if we can't receive any resolutions on the
+controller client due to connection window underflow, then the load balancer
+will get into this state if (1) it is new and cannot receive the initial
+resolution or (2) if all of its endpoints have failed, i.e. because the
+target cluster has changed.
+
+So, if the balancer becomes stuck and empty, we'd expect its nearest buffer
+worker to get stuck as well. But, we seem to be leaking upstream services as
+well (i.e. those in the profile stack, above the balancer). We might
+reasonably expect that these would be dropped when the router evicts the
+top-level buffer. This isn't so.
+
+When the balancer becomes unresponsive, the buffer that wraps it
+_inevitablity_ becomes full, even in the face of request cancelation--because
+request cancelatiion doesn't actually create more buffer capacity eagerly.
+When this buffer fills, it becomes unready to upstream services. This
+inevitably means that an upstream buffer's inner service starts returning
+unready (because it contains a buffer that's full), and the buffer exhaustion
+propagates up to the router, at which point we'll start rejecting request
+eagerly due to load shedding.
+
+We fill all the buffers. The route will never recover if the balancer does
+not become ready; and it will never become ready unless the stuck connection
+is dropped for some reason. This matches loads of anecdotal error reports.
+
+#### So what are we gonna do about it?
+
+- timeout balancer unreadiness (not great for apps; good for having a clear, predictable failure mode)
+- cancelation strategy improvements?
+- metrics
