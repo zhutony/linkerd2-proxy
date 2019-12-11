@@ -120,6 +120,36 @@ is dropped for some reason. This matches loads of anecdotal error reports.
 
 #### So what are we gonna do about it?
 
-- timeout balancer unreadiness (not great for apps; good for having a clear, predictable failure mode)
-- cancelation strategy improvements?
-- metrics
+##### Readiness timeouts
+
+Should we bound the amount of time the the balancer can stay unready? Given
+the semantics of Buffer, it seems absolutely necessary that _all_ layers
+within a buffer need to enforce such a timeout. But what timeout value? How
+does his relate to other timeouts (like the router's idle timeout)?
+
+What if a service is legitimately empty?
+
+##### Eager cancelation
+
+We don't necessarily need to implement readiness timeouts if we change the
+buffering/cancelation strategy to eagerly release capacity (i.e. even when
+the inner service is not ready). This seems particularly desirable, as the
+timeout approach above may lead to lots of resource churn when a service is
+legitimately empty.
+
+##### Flow control watchdog
+
+If the proxy could know when a connection/stream is stalled due to flow
+control, it would be great to be able to timeout connections when they are in
+this state so that we can fail the connection and reconnect (hopefully to
+another endpoint, but that's another problem).
+
+##### Metrics
+
+It seems like we want some way to track how much time a connection/stream
+spends stalled on flow control.
+
+We also need to get a counter around the case when buffers are backed up and
+we start shedding load for a service.
+
+What else?
