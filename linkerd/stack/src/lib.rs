@@ -3,7 +3,9 @@
 pub mod layer;
 pub mod map_target;
 pub mod per_make;
+pub mod proxy;
 mod shared;
 
 pub use self::layer::{Layer, LayerExt};
+pub use self::proxy::Proxy;
 pub use self::shared::Shared;

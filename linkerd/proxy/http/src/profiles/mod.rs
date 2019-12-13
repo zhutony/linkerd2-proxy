@@ -12,19 +12,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod concrete;
 pub mod recognize;
-/// A stack module that produces a Service that routes requests through alternate
-/// middleware configurations
-///
-/// As the router's Stack is built, a destination is extracted from the stack's
-/// target and it is used to get route profiles from ` GetRoutes` implementation.
-///
-/// Each route uses a shared underlying concrete dst router.  The concrete dst
-/// router picks a concrete dst (NameAddr) from the profile's `dst_overrides` if
-/// they exist, or uses the router's target's addr if no `dst_overrides` exist.
-/// The concrete dst router uses the concrete dst as the target for the
-/// underlying stack.
-pub mod router;
+mod requests;
+pub mod service;
 
 #[derive(Clone, Debug)]
 pub struct WeightedAddr {

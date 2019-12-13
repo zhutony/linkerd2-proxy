@@ -185,7 +185,7 @@ where
         router
     }
 
-    pub fn into_make(self) -> IndexMap<Rec::Target, Svc> {
+    pub fn into_routes(self) -> IndexMap<Rec::Target, Svc> {
         self.inner.make.0
     }
 }
