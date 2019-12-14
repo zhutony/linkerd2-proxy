@@ -12,134 +12,84 @@
 
 use super::concrete::Concrete;
 use super::requests::Requests;
-use super::{CanGetDestination, GetRoutes, Route, Routes, WeightedAddr, WithAddr, WithRoute};
-use futures::{future, Async, Poll, Stream};
-use indexmap::IndexMap;
+use super::{CanGetDestination, GetRoutes, Route, Routes, WithAddr, WithRoute};
+use futures::{future, try_ready, Async, Future, Poll, Stream};
 use linkerd2_error::{Error, Never};
-use linkerd2_router as rt;
-use linkerd2_stack::{Proxy, Shared};
-use std::hash::Hash;
-use tracing::{debug, error};
+use linkerd2_router::Make;
+use linkerd2_stack::Proxy;
+use rand::{rngs::SmallRng, SeedableRng};
+use tracing::debug;
 
-pub fn layer<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>(
-    get_routes: G,
-    route_layer: RouteLayer,
-) -> Layer<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>
+pub fn layer<G, L>(get_routes: G, route_layer: L) -> Layer<G, L>
 where
     G: GetRoutes + Clone,
-    RouteLayer: Clone,
+    L: Clone,
 {
     Layer {
         get_routes,
         route_layer,
         default_route: Route::default(),
-        _p: ::std::marker::PhantomData,
+        rng: SmallRng::from_entropy(),
     }
 }
 
-#[derive(Debug)]
-pub struct Layer<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq> {
+#[derive(Clone, Debug)]
+pub struct Layer<G, L> {
     get_routes: G,
-    route_layer: RouteLayer,
+    route_layer: L,
     /// This is saved into a field so that the same `Arc`s are used and
     /// cloned, instead of calling `Route::default()` every time.
     default_route: Route,
-    _p: ::std::marker::PhantomData<fn() -> (ConcreteMake, RouteReq, ConcreteReq)>,
+    rng: SmallRng,
 }
 
-#[derive(Debug)]
-pub struct MakeSvc<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq> {
-    make_concrete: ConcreteMake,
+#[derive(Clone, Debug)]
+pub struct MakeSvc<G, CMake, L> {
     get_routes: G,
-    route_layer: RouteLayer,
+    make_concrete: CMake,
+    route_layer: L,
     default_route: Route,
-    _p: ::std::marker::PhantomData<fn(RouteReq, ConcreteReq)>,
+    rng: SmallRng,
 }
 
-/// The Service consists of a RouteRouter which routes over the route
-/// stack built by the `route_layer`.  The per-route stack is terminated by
-/// a shared `concrete_router`.  The `concrete_router` routes over the
-/// underlying stack and passes the concrete dst as the target.
-///
-/// ```plain
-///     +--------------+
-///     |RouteRouter   | Target = t
-///     +--------------+
-///     |route_layer   | Target = t.with_route(route)
-///     +--------------+
-///     |ConcreteRouter| Target = t
-///     +--------------+
-///     |inner         | Target = t.with_addr(concrete_dst)
-///     +--------------+
-/// ```
-pub struct Service<RouteStream, Target, RouteMake, ConcreteMake, RouteReq, ConcreteReq>
+pub struct Service<T, P, RMake, CMake>
 where
-    Target: WithAddr + WithRoute + Clone + Eq + Hash,
-    Target::Output: Clone + Eq + Hash,
-    ConcreteMake: rt::Make<Target>,
-    ConcreteMake::Value: tower::Service<ConcreteReq>,
-    RouteMake: rt::Make<Target::Output>,
-    RouteMake::Value: Proxy<RouteReq, Concrete<ConcreteMake::Value>>,
+    T: WithRoute,
+    RMake: Make<T::Output>,
+    CMake: Make<T>,
 {
-    target: Target,
-    make_concrete: ConcreteMake,
-    make_route: RouteMake,
-    route_stream: Option<RouteStream>,
-    requests: Requests<RouteMake::Value>,
-    concrete: Concrete<ConcreteMake::Value>,
-    default_route: Route,
+    profiles: Option<P>,
+    requests: Requests<T, RMake>,
+    concrete: Concrete<T, CMake>,
 }
 
-impl<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq> tower::layer::Layer<ConcreteMake>
-    for Layer<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>
+impl<G, CMake, L> tower::layer::Layer<CMake> for Layer<G, L>
 where
     G: GetRoutes + Clone,
-    RouteLayer: Clone,
+    L: Clone,
 {
-    type Service = MakeSvc<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>;
+    type Service = MakeSvc<G, CMake, L>;
 
-    fn layer(&self, make_concrete: ConcreteMake) -> Self::Service {
+    fn layer(&self, make_concrete: CMake) -> Self::Service {
         MakeSvc {
             make_concrete,
             get_routes: self.get_routes.clone(),
             route_layer: self.route_layer.clone(),
             default_route: self.default_route.clone(),
-            _p: ::std::marker::PhantomData,
+            rng: self.rng.clone(),
         }
     }
 }
 
-impl<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq> Clone
-    for Layer<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>
-where
-    G: Clone,
-    RouteLayer: Clone,
-{
-    fn clone(&self) -> Self {
-        Layer {
-            get_routes: self.get_routes.clone(),
-            route_layer: self.route_layer.clone(),
-            default_route: self.default_route.clone(),
-            _p: ::std::marker::PhantomData,
-        }
-    }
-}
-
-impl<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq, Target, RouteProxy> tower::Service<Target>
-    for MakeSvc<G, ConcreteMake, RouteLayer, RouteReq, ConcreteReq>
+impl<G, CMake, L, T> tower::Service<T> for MakeSvc<G, CMake, L>
 where
     G: GetRoutes,
-    Target: CanGetDestination + WithRoute + WithAddr + Eq + Hash + Clone,
-    <Target as WithRoute>::Output: Eq + Hash + Clone,
-    ConcreteMake: rt::Make<Target> + Clone,
-    ConcreteMake::Value: tower::Service<ConcreteReq>,
-    <ConcreteMake::Value as tower::Service<ConcreteReq>>::Error: Into<Error>,
-    RouteLayer: tower::layer::Layer<()> + Clone,
-    RouteLayer::Service: rt::Make<<Target as WithRoute>::Output, Value = RouteProxy> + Clone,
-    RouteProxy: Proxy<RouteReq, Concrete<ConcreteMake::Value>>,
-    RouteProxy::Error: Into<Error>,
+    T: CanGetDestination + WithRoute + WithAddr + Clone,
+    CMake: Make<T> + Clone,
+    L: tower::layer::Layer<()> + Clone,
+    L::Service: Make<T::Output> + Clone,
 {
-    type Response = Service<G::Stream, Target, RouteProxy, ConcreteMake, RouteReq, ConcreteReq>;
+    type Response = Service<T, G::Stream, L::Service, CMake>;
     type Error = Never;
     type Future = future::FutureResult<Self::Response, Self::Error>;
 
@@ -147,7 +97,7 @@ where
         Ok(().into()) // always ready to make a Router
     }
 
-    fn call(&mut self, target: Target) -> Self::Future {
+    fn call(&mut self, target: T) -> Self::Future {
         let updates = match target.get_destination() {
             Some(ref dst) => self.get_routes.get_routes(&dst),
             None => {
@@ -159,149 +109,83 @@ where
         future::ok(Service::new(
             target,
             updates,
+            self.route_layer.layer(()),
+            self.default_route.clone(),
             self.make_concrete.clone(),
-            self.route_layer.clone(),
+            self.rng.clone(),
         ))
     }
 }
 
-impl<G, ConcreteMake, RouteLayer, ConcreteReq, RouteReq> Clone
-    for MakeSvc<G, ConcreteMake, RouteLayer, ConcreteReq, RouteReq>
+impl<T, P, RMake, CMake> Service<T, P, RMake, CMake>
 where
-    G: Clone,
-    ConcreteMake: Clone,
-    RouteLayer: Clone,
-{
-    fn clone(&self) -> Self {
-        MakeSvc {
-            make_concrete: self.make_concrete.clone(),
-            get_routes: self.get_routes.clone(),
-            route_layer: self.route_layer.clone(),
-            default_route: self.default_route.clone(),
-            _p: ::std::marker::PhantomData,
-        }
-    }
-}
-
-impl<RouteStream, Target, RouteMake, ConcreteMake, RouteReq, ConcreteReq>
-    Service<RouteStream, Target, RouteMake, ConcreteMake, RouteReq, ConcreteReq>
-where
-    RouteStream: Stream<Item = Routes, Error = Never>,
-    Target: WithRoute + WithAddr + Eq + Hash + Clone,
-    Target::Output: Clone + Eq + Hash,
-    RouteMake: rt::Make<Target::Output> + Clone,
-    RouteMake::Value: Proxy<RouteReq, Concrete<ConcreteMake::Value>>,
-    ConcreteMake: rt::Make<Target> + Clone,
-    ConcreteMake::Value: tower::Service<ConcreteReq>,
+    T: WithRoute + WithAddr + Clone,
+    P: Stream<Item = Routes, Error = Never>,
+    RMake: Make<T::Output>,
+    CMake: Make<T>,
 {
     fn new(
-        target: Target,
-        updates: RouteStream,
-        make_concrete: ConcreteMake,
-        make_route: RouteMake,
+        target: T,
+        profiles: Option<P>,
+        make_route: RMake,
         default_route: Route,
+        make_concrete: CMake,
+        rng: SmallRng,
     ) -> Self {
-        let concrete = Concrete::service(make_concrete.make(&target));
-
-        // Initially there are no routes, so build a route router with only
-        // the default route.
-        let proxy_request = Requests::new(target.clone(), make_route, default_route);
-
         Self {
-            concrete,
-            proxy_request,
+            profiles,
+            requests: Requests::new(target.clone(), make_route, default_route),
+            concrete: Concrete::forward(target, make_concrete, rng),
         }
     }
 
-    fn update_routes(&mut self, routes: Routes) {
-        // We must build a new concrete router with a service for each
-        // dst_override.  These services are created eagerly.  If a service
-        // was present in the previous concrete router, we reuse that
-        // service in the new concrete router rather than recreating it.
-        let capacity = routes.dst_overrides.len() + 1;
-
-        let mut make = IndexMap::with_capacity(capacity);
-        let mut old_routes = self
-            .concrete_router
-            .take()
-            .expect("previous concrete dst router is missing")
-            .into_routes();
-
-        let target_svc = old_routes.remove(&self.target).unwrap_or_else(|| {
-            error!("concrete dst router did not contain target dst");
-            self.make_concrete.make(&self.target)
-        });
-        make.insert(self.target.clone(), target_svc);
-
-        for WeightedAddr { addr, .. } in &routes.dst_overrides {
-            let target = self.target.clone().with_addr(addr.clone());
-            let service = old_routes
-                .remove(&target)
-                .unwrap_or_else(|| self.make_concrete.make(&target));
-            make.insert(target, service);
+    // Drive the profiles stream to notready or completion, capturing the
+    // most recent update.
+    fn poll_update(&mut self) {
+        let mut profile = None;
+        while let Some(Async::Ready(Some(update))) =
+            self.profiles.as_mut().and_then(|ref mut s| s.poll().ok())
+        {
+            profile = Some(update);
         }
 
-        let concrete_router = rt::Router::new_fixed(
-            ConcreteDstRecognize::new(self.target.clone(), routes.dst_overrides),
-            make,
-        );
+        if let Some(update) = profile {
+            if update.dst_overrides.is_empty() {
+                self.concrete.set_forward();
+            } else {
+                self.concrete.set_split(update.dst_overrides);
+            }
 
-        // We store the concrete_router directly in the Service struct so
-        // that we can extract its services when its time to construct a
-        // new concrete router.
-        self.concrete_router = Some(concrete_router.clone());
-
-        let stack = self.route_layer.layer(Shared::new(concrete_router));
-
-        let default_route = self.target.clone().with_route(self.default_route.clone());
-
-        // Create a new fixed router router; we can eagerly make the
-        // services and never expire the routes from the profile router
-        // cache.
-        let capacity = routes.routes.len() + 1;
-        let mut make = IndexMap::with_capacity(capacity);
-        make.insert(default_route.clone(), stack.make(&default_route));
-
-        for (_, route) in &routes.routes {
-            let route = self.target.clone().with_route(route.clone());
-            let service = stack.make(&route);
-            make.insert(route, service);
+            self.requests.set_routes(update.routes);
         }
     }
 }
 
-impl<RouteStream, Target, RouteMake, ConcreteMake, RouteReq, ConcreteReq, RouteProxy>
-    tower::Service<RouteReq>
-    for Service<RouteStream, Target, RouteMake, ConcreteMake, RouteReq, ConcreteReq>
+impl<B, T, P, RMake, CMake, R, C> tower::Service<http::Request<B>> for Service<T, P, RMake, CMake>
 where
-    RouteStream: Stream<Item = Routes, Error = Never>,
-    Target: WithRoute + WithAddr + Eq + Hash + Clone,
-    Target::Output: Clone + Eq + Hash,
-    ConcreteMake: rt::Make<Target> + Clone,
-    ConcreteMake::Value: tower::Service<ConcreteReq>,
-    RouteMake: rt::Make<Target::Output, Value = RouteProxy> + Clone,
-    RouteProxy: Proxy<RouteReq, Concrete<ConcreteMake::Value>>,
+    T: WithRoute + WithAddr + Clone,
+    P: Stream<Item = Routes, Error = Never>,
+    CMake: Make<T, Value = C>,
+    RMake: Make<T::Output, Value = R>,
+    R: Proxy<http::Request<B>, Concrete<T, CMake>>,
+    R::Error: Into<Error>,
+    C: tower::Service<R::Request>,
+    C::Error: Into<Error>,
 {
-    type Response = RouteProxy::Response;
+    type Response = R::Response;
     type Error = Error;
-    type Future = future::MapErr<
-        RouteProxy::Future,
-        fn(<ConcreteMake::Value as tower::Service<ConcreteReq>>::Error) -> Error,
-    >;
+    type Future = future::MapErr<R::Future, fn(R::Error) -> Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        while let Some(Async::Ready(Some(routes))) = self
-            .route_stream
-            .as_mut()
-            .and_then(|ref mut s| s.poll().ok())
-        {
-            self.update_routes(routes);
-        }
-
-        self.concrete.poll_ready().map_err(Into::into)
+        try_ready!(self.concrete.poll_ready().map_err(Into::into));
+        // Don't bother updating routes until the inner service is ready.
+        self.poll_update();
+        Ok(().into())
     }
 
-    fn call(&mut self, req: RouteReq) -> Self::Future {
-        self.routes.proxy(&mut self.concrete, req)
+    fn call(&mut self, req: http::Request<B>) -> Self::Future {
+        self.requests
+            .proxy(&mut self.concrete, req)
+            .map_err(Into::into)
     }
 }
