@@ -1,10 +1,12 @@
 use crate::metrics::{handle_time, Scoped, Stats};
 use futures::{future, try_ready, Future, Poll};
 use http::{Request, Response};
+use linkerd2_error::Error;
 use linkerd2_proxy_transport::tls;
-use std::marker::PhantomData;
-use tower::retry as tower_retry;
+use linkerd2_stack::{proxy, Make, Proxy};
+use tower::retry;
 pub use tower::retry::budget::Budget;
+pub use tower::util::{Oneshot, ServiceExt};
 use tracing::trace;
 
 pub trait CanRetry {
@@ -26,88 +28,92 @@ pub trait TryClone: Sized {
     fn try_clone(&self) -> Option<Self>;
 }
 
-pub struct Layer<S, K, A, B> {
-    registry: S,
-    _p: PhantomData<(K, fn(A) -> B)>,
+#[derive(Clone, Debug)]
+pub struct Layer<R> {
+    registry: R,
 }
 
-pub struct Stack<M, S, K, A, B> {
+#[derive(Clone, Debug)]
+pub struct Stack<M, R> {
+    registry: R,
     inner: M,
-    registry: S,
-    _p: PhantomData<(K, fn(A) -> B)>,
 }
 
-pub struct MakeFuture<F, R, S> {
+pub struct MakeFuture<F, R> {
     inner: F,
-    policy: Option<Policy<R, S>>,
+    policy: Option<R>,
 }
 
-pub type Service<R, Svc, St> = tower_retry::Retry<Policy<R, St>, Svc>;
+pub enum Service<R, S> {
+    Inner(S),
+    Retry(R, S),
+}
+
+pub enum ResponseFuture<R, P, S, Req>
+where
+    R: retry::Policy<Req, P::Response, Error> + Clone,
+    P: Proxy<Req, S> + Clone,
+    S: tower::Service<P::Request> + Clone,
+    S::Error: Into<Error>,
+{
+    Inner(P::Future),
+    Retry(Oneshot<retry::Retry<R, proxy::Service<P, S>>, Req>),
+}
 
 #[derive(Clone)]
 pub struct Policy<R, S>(R, S);
 
 // === impl Layer ===
 
-pub fn layer<S, K, A, B>(registry: S) -> Layer<S, K, A, B> {
-    Layer {
-        registry,
-        _p: PhantomData,
-    }
+pub fn layer<R>(registry: R) -> Layer<R> {
+    Layer { registry }
 }
 
-impl<S: Clone, K, A, B> Clone for Layer<S, K, A, B> {
-    fn clone(&self) -> Self {
-        Layer {
-            registry: self.registry.clone(),
-            _p: PhantomData,
-        }
-    }
-}
-
-impl<M, S, K, A, B> tower::layer::Layer<M> for Layer<S, K, A, B>
-where
-    S: Scoped<K> + Clone,
-    S::Scope: Clone,
-    A: TryClone,
-{
-    type Service = Stack<M, S, K, A, B>;
+impl<M, R: Clone> tower::layer::Layer<M> for Layer<R> {
+    type Service = Stack<M, R>;
 
     fn layer(&self, inner: M) -> Self::Service {
         Stack {
             inner,
             registry: self.registry.clone(),
-            _p: PhantomData,
         }
     }
 }
 
 // === impl Stack ===
 
-impl<M: Clone, S: Clone, K, A, B> Clone for Stack<M, S, K, A, B> {
-    fn clone(&self) -> Self {
-        Stack {
-            inner: self.inner.clone(),
-            registry: self.registry.clone(),
-            _p: PhantomData,
+impl<T, M, R> Make<T> for Stack<M, R>
+where
+    T: CanRetry + Clone,
+    M: Make<T>,
+    M::Service: Clone,
+    R: Scoped<T>,
+    R::Scope: Clone,
+{
+    type Service = Service<Policy<T::Retry, R::Scope>, M::Service>;
+
+    fn make(&self, target: T) -> Self::Service {
+        if let Some(retries) = target.can_retry() {
+            trace!("stack is retryable");
+            let policy = Policy(retries, self.registry.scoped(target.clone()));
+            Service::Retry(policy, self.inner.make(target))
+        } else {
+            Service::Inner(self.inner.make(target))
         }
     }
 }
 
-/// impl MakeService
-impl<T, M, S, K, A, B> tower::Service<T> for Stack<M, S, K, A, B>
+impl<T, M, R> tower::Service<T> for Stack<M, R>
 where
     T: CanRetry + Clone,
-    M: tower::MakeService<T, Request<A>, Response = Response<B>>,
-    M::Service: Clone,
-    S: Scoped<K>,
-    S::Scope: Clone,
-    K: From<T>,
-    A: TryClone,
+    M: tower::Service<T>,
+    M::Response: Clone,
+    R: Scoped<T>,
+    R::Scope: Clone,
 {
-    type Response = tower::util::Either<Service<T::Retry, M::Service, S::Scope>, M::Service>;
-    type Error = M::MakeError;
-    type Future = MakeFuture<M::Future, T::Retry, S::Scope>;
+    type Response = Service<Policy<T::Retry, R::Scope>, M::Response>;
+    type Error = M::Error;
+    type Future = MakeFuture<M::Future, Policy<T::Retry, R::Scope>>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.inner.poll_ready()
@@ -116,39 +122,38 @@ where
     fn call(&mut self, target: T) -> Self::Future {
         let policy = if let Some(retries) = target.can_retry() {
             trace!("stack is retryable");
-            let stats = self.registry.scoped(target.clone().into());
+            let stats = self.registry.scoped(target.clone());
             Some(Policy(retries, stats))
         } else {
             None
         };
 
-        let inner = self.inner.make_service(target);
+        let inner = self.inner.call(target);
         MakeFuture { inner, policy }
     }
 }
 
 // === impl MakeFuture ===
 
-impl<F, R, S> Future for MakeFuture<F, R, S>
+impl<F, R> Future for MakeFuture<F, R>
 where
     F: Future,
 {
-    type Item = tower::util::Either<Service<R, F::Item, S>, F::Item>;
+    type Item = Service<R, F::Item>;
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = try_ready!(self.inner.poll());
-        if let Some(policy) = self.policy.take() {
-            Ok(tower::util::Either::A(tower_retry::Retry::new(policy, inner)).into())
-        } else {
-            Ok(tower::util::Either::B(inner).into())
+        match self.policy.take() {
+            None => Ok(Service::Inner(inner).into()),
+            Some(policy) => Ok(Service::Retry(policy, inner).into()),
         }
     }
 }
 
 // === impl Policy ===
 
-impl<R, S, A, B, E> tower_retry::Policy<Request<A>, Response<B>, E> for Policy<R, S>
+impl<R, S, A, B, E> retry::Policy<Request<A>, Response<B>, E> for Policy<R, S>
 where
     R: Retry + Clone,
     S: Stats + Clone,
@@ -187,7 +192,50 @@ where
     }
 }
 
-// TODO this needs to be moved up into the application!
+// === impl Service ===
+
+impl<R, Req, S, P> Proxy<Req, S> for Service<R, P>
+where
+    R: retry::Policy<Req, P::Response, Error> + Clone,
+    P: Proxy<Req, S> + Clone,
+    S: tower::Service<P::Request> + Clone,
+    S::Error: Into<Error>,
+{
+    type Request = P::Request;
+    type Response = P::Response;
+    type Error = Error;
+    type Future = ResponseFuture<R, P, S, Req>;
+
+    fn proxy(&self, svc: &mut S, req: Req) -> Self::Future {
+        match self {
+            Service::Inner(ref p) => ResponseFuture::Inner(p.proxy(svc, req)),
+            Service::Retry(ref policy, ref p) => {
+                let svc = p.clone().into_service(svc.clone());
+                let retry = retry::Retry::new(policy.clone(), svc);
+                ResponseFuture::Retry(retry.oneshot(req))
+            }
+        }
+    }
+}
+
+impl<R, P, S, Req> Future for ResponseFuture<R, P, S, Req>
+where
+    R: retry::Policy<Req, P::Response, Error> + Clone,
+    P: Proxy<Req, S> + Clone,
+    S: tower::Service<P::Request> + Clone,
+    S::Error: Into<Error>,
+{
+    type Item = P::Response;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self {
+            ResponseFuture::Inner(ref mut f) => f.poll().map_err(Into::into),
+            ResponseFuture::Retry(ref mut f) => f.poll().map_err(Into::into),
+        }
+    }
+}
+
 impl<B: TryClone> TryClone for Request<B> {
     fn try_clone(&self) -> Option<Self> {
         if let Some(body) = self.body().try_clone() {

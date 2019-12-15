@@ -127,6 +127,14 @@ impl<S> Stack<S> {
         self
     }
 
+    pub fn makes_clone<T>(self) -> Self
+    where
+        S: Make<T>,
+        S::Service: Clone,
+    {
+        self
+    }
+
     /// Validates that this stack serves T-typed targets.
     pub fn serves<T>(self) -> Self
     where
@@ -177,6 +185,15 @@ impl<P> Proxies<P> {
     pub fn makes<T>(self) -> Self
     where
         P: Make<T>,
+    {
+        self
+    }
+
+    /// Validates that this stack makes T-typed targets.
+    pub fn makes_clone<T>(self) -> Self
+    where
+        P: Make<T>,
+        P::Service: Clone,
     {
         self
     }

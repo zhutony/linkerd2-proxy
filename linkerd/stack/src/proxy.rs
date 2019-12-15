@@ -18,6 +18,7 @@ pub trait Proxy<Req, S: tower::Service<Self::Request>> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Service<P, S> {
     proxy: P,
     inner: S,

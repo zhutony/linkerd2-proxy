@@ -10,7 +10,7 @@
 //! The concrete dst router uses the concrete dst as the target for the
 //! underlying stack.
 
-use super::concrete::Concrete;
+use super::concrete;
 use super::requests::Requests;
 use super::{CanGetDestination, GetRoutes, Route, Routes, WithAddr, WithRoute};
 use futures::{future, try_ready, Async, Future, Poll, Stream};
@@ -46,7 +46,8 @@ where
 {
     profiles: Option<P>,
     requests: Requests<T, RMake>,
-    concrete: Concrete<T, CMake>,
+    concrete: concrete::Service<CMake::Service>,
+    concrete_update: concrete::Update<T, CMake>,
 }
 
 impl<G, RMake> Layer<G, RMake>
@@ -88,6 +89,7 @@ where
     T: CanGetDestination + WithRoute + WithAddr + Clone,
     RMake: Make<T::Output> + Clone,
     CMake: Make<T> + Clone,
+    CMake::Service: Clone,
 {
     type Service = Service<T, G::Stream, RMake, CMake>;
 
@@ -100,14 +102,14 @@ where
             }
         };
 
+        let (concrete, concrete_update) =
+            concrete::forward(target.clone(), self.make_concrete.clone(), self.rng.clone());
+        let requests = Requests::new(target, self.make_route.clone(), self.default_route.clone());
         Service {
             profiles,
-            requests: Requests::new(
-                target.clone(),
-                self.make_route.clone(),
-                self.default_route.clone(),
-            ),
-            concrete: Concrete::forward(target, self.make_concrete.clone(), self.rng.clone()),
+            requests,
+            concrete,
+            concrete_update,
         }
     }
 }
@@ -118,6 +120,7 @@ where
     P: Stream<Item = Routes, Error = Never>,
     RMake: Make<T::Output>,
     CMake: Make<T>,
+    CMake::Service: Clone,
 {
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
@@ -131,9 +134,13 @@ where
 
         if let Some(update) = profile {
             if update.dst_overrides.is_empty() {
-                self.concrete.set_forward();
+                self.concrete_update
+                    .set_forward()
+                    .expect("both sides of the concrete updater must be held");
             } else {
-                self.concrete.set_split(update.dst_overrides);
+                self.concrete_update
+                    .set_split(update.dst_overrides)
+                    .expect("both sides of the concrete updater must be held");
             }
 
             self.requests.set_routes(update.routes);
@@ -147,9 +154,9 @@ where
     P: Stream<Item = Routes, Error = Never>,
     CMake: Make<T, Service = C>,
     RMake: Make<T::Output, Service = R>,
-    R: Proxy<http::Request<B>, Concrete<T, CMake>>,
+    R: Proxy<http::Request<B>, concrete::Service<C>>,
     R::Error: Into<Error>,
-    C: tower::Service<R::Request>,
+    C: tower::Service<R::Request> + Clone,
     C::Error: Into<Error>,
 {
     type Response = R::Response;
@@ -157,9 +164,8 @@ where
     type Future = future::MapErr<R::Future, fn(R::Error) -> Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        try_ready!(self.concrete.poll_ready().map_err(Into::into));
-        // Don't bother updating routes until the inner service is ready.
         self.poll_update();
+        try_ready!(self.concrete.poll_ready());
         Ok(().into())
     }
 

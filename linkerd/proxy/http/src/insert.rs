@@ -28,7 +28,6 @@ pub struct MakeFuture<F, L, V> {
     _marker: PhantomData<fn() -> V>,
 }
 
-#[derive(Clone)]
 pub struct Insert<S, L, V> {
     inner: S,
     lazy: L,
@@ -183,6 +182,16 @@ where
     fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
         req.extensions_mut().insert(self.lazy.value());
         self.inner.call(req)
+    }
+}
+
+impl<S: Clone, L: Clone, V> Clone for Insert<S, L, V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            lazy: self.lazy.clone(),
+            _marker: self._marker,
+        }
     }
 }
 

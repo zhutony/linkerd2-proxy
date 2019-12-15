@@ -184,9 +184,10 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route_retry.clone(),
                 ))
+                .makes_clone::<dst::Route>()
                 //.push(http::retry::layer(metrics.http_route_retry))
-                .push(http::timeout::layer())
                 .makes::<dst::Route>()
+                .push(http::timeout::layer())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
@@ -226,8 +227,8 @@ impl<A: OrigDstAddr> Config<A> {
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
-                .push_buffer(100, DispatchDeadline::extract)
                 .push_pending()
+                .push_buffer(100, DispatchDeadline::extract)
                 .makes::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
@@ -241,7 +242,7 @@ impl<A: OrigDstAddr> Config<A> {
             // 3. Creates a load balancer , configured by resolving the
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
-                .makes::<DstAddr>()
+                .makes_clone::<DstAddr>()
                 .push(http::profiles::Layer::new(
                     profiles_client,
                     make_dst_route_proxy.into_inner(),
