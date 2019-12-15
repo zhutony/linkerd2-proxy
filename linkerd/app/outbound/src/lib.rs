@@ -185,7 +185,7 @@ impl<A: OrigDstAddr> Config<A> {
                     metrics.http_route_retry.clone(),
                 ))
                 .makes_clone::<dst::Route>()
-                //.push(http::retry::layer(metrics.http_route_retry))
+                .push(http::retry::layer(metrics.http_route_retry))
                 .makes::<dst::Route>()
                 .push(http::timeout::layer())
                 .push(http::metrics::layer::<_, classify::Response>(

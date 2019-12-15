@@ -35,7 +35,7 @@ where
 
 pub trait Scoped<T> {
     type Scope: Stats;
-    fn scoped(&self, index: impl Into<T>) -> Self::Scope;
+    fn scoped(&self, index: T) -> Self::Scope;
 }
 
 pub trait Stats {
@@ -98,14 +98,15 @@ where
     }
 }
 
-impl<T, C> Scoped<T> for Arc<Mutex<Registry<T, C>>>
+impl<T, K, C> Scoped<T> for Arc<Mutex<Registry<K, C>>>
 where
-    T: Hash + Eq,
+    K: From<T>,
+    K: Hash + Eq,
     C: Hash + Eq,
 {
     type Scope = Arc<Mutex<RequestMetrics<C>>>;
 
-    fn scoped(&self, target: impl Into<T>) -> Self::Scope {
+    fn scoped(&self, target: T) -> Self::Scope {
         self.lock()
             .expect("metrics Registry lock")
             .by_target
