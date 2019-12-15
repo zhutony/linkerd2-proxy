@@ -2,6 +2,7 @@
 
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
+use std::marker::PhantomData;
 use tracing::trace;
 
 /// A fallback layer composing two service builders.
@@ -10,17 +11,19 @@ use tracing::trace;
 /// an error matching a given predicate, the fallback future will attempt
 /// to call the secondary `MakeService`.
 #[derive(Clone, Debug)]
-pub struct Layer<A, B, P = fn(&Error) -> bool> {
+pub struct Layer<A, B, T, P = fn(&Error) -> bool> {
     primary: A,
     fallback: B,
     predicate: P,
+    _marker: PhantomData<fn(T)>,
 }
 
 #[derive(Clone, Debug)]
-pub struct MakeSvc<A, B, P> {
+pub struct MakeSvc<A, B, T, P> {
     primary: A,
     fallback: B,
     predicate: P,
+    _marker: PhantomData<fn(T)>,
 }
 
 pub struct MakeFuture<A, B, P, T>
@@ -44,21 +47,22 @@ enum FallbackState<A, B, T> {
     Fallback(B),
 }
 
-pub fn layer<A, B>(primary: A, fallback: B) -> Layer<A, B> {
+pub fn layer<A, B, T>(primary: A, fallback: B) -> Layer<A, B, T> {
     let predicate: fn(&Error) -> bool = |_| true;
     Layer {
         primary,
         fallback,
         predicate,
+        _marker: PhantomData,
     }
 }
 
 // === impl Layer ===
 
-impl<A, B> Layer<A, B> {
+impl<A, B, T> Layer<A, B, T> {
     /// Returns a `Layer` that uses the given `predicate` to determine whether
     /// to fall back.
-    pub fn with_predicate<P>(self, predicate: P) -> Layer<A, B, P>
+    pub fn with_predicate<P>(self, predicate: P) -> Layer<A, B, T, P>
     where
         P: Fn(&Error) -> bool + Clone,
     {
@@ -66,12 +70,13 @@ impl<A, B> Layer<A, B> {
             primary: self.primary,
             fallback: self.fallback,
             predicate,
+            _marker: PhantomData,
         }
     }
 
     /// Returns a `Layer` that falls back if the error or its source is of
     /// type `E`.
-    pub fn on_error<E>(self) -> Layer<A, B>
+    pub fn on_error<E>(self) -> Layer<A, B, T>
     where
         E: std::error::Error + 'static,
     {
@@ -79,27 +84,30 @@ impl<A, B> Layer<A, B> {
     }
 }
 
-impl<A, B, P, M> tower::layer::Layer<M> for Layer<A, B, P>
+impl<A, B, T, P, M> tower::layer::Layer<M> for Layer<A, B, T, P>
 where
     A: tower::layer::Layer<M>,
+    A::Service: tower::Service<T>,
     B: tower::layer::Layer<M>,
+    B::Service: tower::Service<T>,
     M: Clone,
     P: Fn(&Error) -> bool + Clone,
 {
-    type Service = MakeSvc<A::Service, B::Service, P>;
+    type Service = MakeSvc<A::Service, B::Service, T, P>;
 
     fn layer(&self, inner: M) -> Self::Service {
         MakeSvc {
             primary: self.primary.layer(inner.clone()),
             fallback: self.fallback.layer(inner),
             predicate: self.predicate.clone(),
+            _marker: self._marker,
         }
     }
 }
 
 // === impl MakeSvc ===
 
-impl<A, B, P, T> tower::Service<T> for MakeSvc<A, B, P>
+impl<A, B, P, T> tower::Service<T> for MakeSvc<A, B, T, P>
 where
     A: tower::Service<T>,
     A::Error: Into<Error>,

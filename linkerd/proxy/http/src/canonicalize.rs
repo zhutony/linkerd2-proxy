@@ -14,6 +14,7 @@ use http;
 use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_dns as dns;
 use linkerd2_error::Never;
+use linkerd2_stack::Make;
 use std::time::Duration;
 use tokio;
 use tokio::sync::{mpsc, oneshot};
@@ -105,6 +106,38 @@ where
 }
 
 // === impl Stack ===
+
+impl<M> Make<Addr> for Stack<M>
+where
+    M: Make<Addr>,
+{
+    type Service = tower::util::Either<Service<M::Service>, M::Service>;
+
+    fn make(&self, addr: Addr) -> Self::Service {
+        let task = match addr {
+            Addr::Name(ref na) => Some((na.clone(), self.resolver.clone(), self.timeout)),
+            Addr::Socket(_) => None,
+        };
+
+        let inner = self.inner.make(addr);
+
+        if let Some((na, resolver, timeout)) = task {
+            let (tx, rx) = mpsc::channel(1);
+            let (_tx_stop, rx_stop) = oneshot::channel();
+
+            tokio::spawn(Task::new(na, resolver, timeout, tx, rx_stop).in_current_span());
+
+            tower::util::Either::A(Service {
+                canonicalized: None,
+                inner,
+                rx,
+                _tx_stop,
+            })
+        } else {
+            tower::util::Either::B(inner)
+        }
+    }
+}
 
 impl<M> tower::Service<Addr> for Stack<M>
 where

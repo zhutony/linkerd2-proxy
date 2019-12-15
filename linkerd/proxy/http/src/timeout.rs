@@ -1,9 +1,8 @@
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_stack::Proxy;
-use linkerd2_timeout::{error, Timeout};
+use linkerd2_stack::{Make, Proxy};
+use linkerd2_timeout::{error, Timeout as Inner, TimeoutFuture};
 use std::time::Duration;
-use tokio::timer;
 use tracing::{debug, error};
 
 /// Implement on targets to determine if a service has a timeout.
@@ -35,8 +34,7 @@ pub struct MakeFuture<F> {
     timeout: Option<Duration>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Service<S>(Timeout<S>);
+pub struct Timeout<T>(Inner<T>);
 
 /// A marker set in `http::Response::extensions` that *this* process triggered
 /// the request timeout.
@@ -51,12 +49,27 @@ impl<M> tower::layer::Layer<M> for Layer {
     }
 }
 
+impl<T, M> Make<T> for Stack<M>
+where
+    M: Make<T>,
+    T: HasTimeout,
+{
+    type Service = Timeout<M::Service>;
+
+    fn make(&self, target: T) -> Self::Service {
+        match target.timeout() {
+            Some(t) => Timeout(Inner::new(self.inner.make(target), t)),
+            None => Timeout(Inner::passthru(self.inner.make(target))),
+        }
+    }
+}
+
 impl<T, M> tower::Service<T> for Stack<M>
 where
     M: tower::Service<T>,
     T: HasTimeout,
 {
-    type Response = tower::util::Either<Service<M::Response>, M::Response>;
+    type Response = Timeout<M::Response>;
     type Error = M::Error;
     type Future = MakeFuture<M::Future>;
 
@@ -73,22 +86,22 @@ where
 }
 
 impl<F: Future> Future for MakeFuture<F> {
-    type Item = tower::util::Either<Service<F::Item>, F::Item>;
+    type Item = Timeout<F::Item>;
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = try_ready!(self.inner.poll());
 
-        let svc = if let Some(timeout) = self.timeout {
-            tower::util::Either::A(Service(Timeout::new(inner, timeout)))
-        } else {
-            tower::util::Either::B(inner)
+        let svc = match self.timeout {
+            Some(t) => Timeout(Inner::new(inner, t)),
+            None => Timeout(Inner::passthru(inner)),
         };
+
         Ok(svc.into())
     }
 }
 
-impl<P, S, A, B> Proxy<http::Request<A>, S> for Service<P>
+impl<P, S, A, B> Proxy<http::Request<A>, S> for Timeout<P>
 where
     P: Proxy<http::Request<A>, S, Response = http::Response<B>>,
     S: tower::Service<P::Request>,
@@ -104,7 +117,7 @@ where
     }
 }
 
-impl<S, A, B> tower::Service<http::Request<A>> for Service<S>
+impl<S, A, B> tower::Service<http::Request<A>> for Timeout<S>
 where
     S: tower::Service<http::Request<A>, Response = http::Response<B>>,
     S::Error: Into<Error>,
@@ -123,10 +136,7 @@ where
     }
 }
 
-pub struct ResponseFuture<F, B>(
-    Timeout<timer::Timeout<F>>,
-    std::marker::PhantomData<fn() -> B>,
-);
+pub struct ResponseFuture<F, B>(TimeoutFuture<F>, std::marker::PhantomData<fn() -> B>);
 
 impl<F, B> Future for ResponseFuture<F, B>
 where

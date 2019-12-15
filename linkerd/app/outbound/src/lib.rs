@@ -10,7 +10,7 @@ use linkerd2_app_core::{
     self as core, classify,
     config::{ProxyConfig, ServerConfig},
     dns, drain,
-    dst::DstAddr,
+    dst::{self, DstAddr},
     errors, http_request_authority_addr, http_request_host_addr,
     http_request_l5d_override_dst_addr, http_request_orig_dst_addr,
     opencensus::proto::trace::v1 as oc,
@@ -179,17 +179,19 @@ impl<A: OrigDstAddr> Config<A> {
             //    retries.
             // 3. Retries are optionally enabled depending on if the route
             //    is retryable.
-            let dst_route_layer = svc::layers()
+            let make_dst_route_proxy = svc::proxies()
                 .push(http::insert::target::layer())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route_retry.clone(),
                 ))
-                .push(http::retry::layer(metrics.http_route_retry))
+                //.push(http::retry::layer(metrics.http_route_retry))
                 .push(http::timeout::layer())
+                .makes::<dst::Route>()
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
-                .push(classify::layer());
+                .push(classify::layer())
+                .makes::<dst::Route>();
 
             // Routes requests to their original destination endpoints. Used as
             // a fallback when service discovery has no endpoints for a destination.
@@ -197,7 +199,8 @@ impl<A: OrigDstAddr> Config<A> {
             // If the `l5d-require-id` header is present, then that identity is
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
-                .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
+                .push_pending()
+                .push_buffer(100, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     Endpoint::from_request,
@@ -205,7 +208,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
-            const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 2;
+            const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 100;
             let balancer_layer = svc::layers()
                 .push_spawn_ready()
                 .push(discover::Layer::new(
@@ -223,8 +226,9 @@ impl<A: OrigDstAddr> Config<A> {
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
+                .push_buffer(100, DispatchDeadline::extract)
                 .push_pending()
-                .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
+                .makes::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
                 ));
@@ -238,7 +242,11 @@ impl<A: OrigDstAddr> Config<A> {
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
                 .makes::<DstAddr>()
-                .push(http::profiles::Layer::new(profiles_client, dst_route_layer))
+                .push(http::profiles::Layer::new(
+                    profiles_client,
+                    make_dst_route_proxy.into_inner(),
+                ))
+                .makes::<DstAddr>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
             // Routes request using the `DstAddr` extension.
@@ -249,7 +257,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", dst.logical = %dst.dst_logical()),
                 ))
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
@@ -288,7 +295,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(http::insert::target::layer())
                 .push(trace::layer(|addr: &Addr| info_span!("addr", %addr)))
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {

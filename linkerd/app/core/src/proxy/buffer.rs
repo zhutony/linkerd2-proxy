@@ -1,7 +1,6 @@
 use crate::svc;
 use futures::{try_ready, Async, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_stack as stack;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -151,10 +150,10 @@ where
     }
 }
 
-impl<T, M, D, Req> stack::Make<T> for Make<M, D, Req>
+impl<T, M, D, Req> svc::Make<T> for Make<M, D, Req>
 where
     T: Clone + Send + Sync + 'static,
-    M: stack::Make<T>,
+    M: svc::Make<T>,
     M::Service: svc::Service<Req> + Send + 'static,
     <M::Service as svc::Service<Req>>::Future: Send,
     <M::Service as svc::Service<Req>>::Error: Into<Error>,
