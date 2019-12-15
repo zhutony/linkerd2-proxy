@@ -107,7 +107,6 @@ where
 
 // === impl Client ===
 
-/// MakeService
 impl<C, T, B> tower::Service<T> for Client<C, T, B>
 where
     C: tower::MakeConnection<T> + Clone + Send + Sync + 'static,

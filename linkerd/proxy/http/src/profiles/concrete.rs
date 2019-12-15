@@ -2,7 +2,7 @@ use super::{WeightedAddr, WithAddr};
 use futures::{Async, Poll};
 use indexmap::IndexMap;
 use linkerd2_addr::NameAddr;
-use linkerd2_router::Make;
+use linkerd2_stack::Make;
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::SmallRng;
 
@@ -10,7 +10,7 @@ pub struct Concrete<T, M: Make<T>> {
     target: T,
     make: M,
     rng: SmallRng,
-    inner: Inner<M::Value>,
+    inner: Inner<M::Service>,
 }
 
 enum Inner<S> {
@@ -22,9 +22,9 @@ enum Inner<S> {
     },
 }
 
-impl<T, M: Make<T>> Concrete<T, M> {
+impl<T: Clone, M: Make<T>> Concrete<T, M> {
     pub fn forward(target: T, make: M, rng: SmallRng) -> Self {
-        let inner = Inner::Forward(make.make(&target));
+        let inner = Inner::Forward(make.make(target.clone()));
         Self {
             target,
             make,
@@ -35,18 +35,18 @@ impl<T, M: Make<T>> Concrete<T, M> {
 
     pub fn set_forward(&mut self) {
         if let Inner::Split { .. } = self.inner {
-            self.inner = Inner::Forward(self.make.make(&self.target));
+            self.inner = Inner::Forward(self.make.make(self.target.clone()));
         }
     }
 
     pub fn set_split(&mut self, addrs: Vec<WeightedAddr>)
     where
-        T: Clone + WithAddr,
+        T: WithAddr,
     {
         self.inner = match self.inner {
             Inner::Forward { .. } => {
                 if addrs.len() == 1 {
-                    Inner::Forward(self.make.make(&self.target))
+                    Inner::Forward(self.make.make(self.target.clone()))
                 } else {
                     let distribution = WeightedIndex::new(addrs.iter().map(|w| w.weight))
                         .expect("invalid weight distribution");
@@ -54,7 +54,7 @@ impl<T, M: Make<T>> Concrete<T, M> {
                         .into_iter()
                         .map(|wa| {
                             let t = self.target.clone().with_addr(wa.addr.clone());
-                            let s = self.make.make(&t);
+                            let s = self.make.make(t);
                             (wa.addr, s)
                         })
                         .collect::<IndexMap<_, _>>();
@@ -79,7 +79,7 @@ impl<T, M: Make<T>> Concrete<T, M> {
                         }
                         None => {
                             let t = self.target.clone().with_addr(w.addr.clone());
-                            let s = self.make.make(&t);
+                            let s = self.make.make(t);
                             services.insert(w.addr, s);
                         }
                     }
@@ -96,7 +96,7 @@ impl<T, M: Make<T>> Concrete<T, M> {
 
 impl<Req, T, M, S> tower::Service<Req> for Concrete<T, M>
 where
-    M: Make<T, Value = S>,
+    M: Make<T, Service = S>,
     S: tower::Service<Req>,
 {
     type Response = S::Response;

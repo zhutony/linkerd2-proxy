@@ -15,28 +15,14 @@ use super::requests::Requests;
 use super::{CanGetDestination, GetRoutes, Route, Routes, WithAddr, WithRoute};
 use futures::{future, try_ready, Async, Future, Poll, Stream};
 use linkerd2_error::{Error, Never};
-use linkerd2_router::Make;
-use linkerd2_stack::Proxy;
+use linkerd2_stack::{Make, Proxy};
 use rand::{rngs::SmallRng, SeedableRng};
 use tracing::debug;
 
-pub fn layer<G, L>(get_routes: G, route_layer: L) -> Layer<G, L>
-where
-    G: GetRoutes + Clone,
-    L: Clone,
-{
-    Layer {
-        get_routes,
-        route_layer,
-        default_route: Route::default(),
-        rng: SmallRng::from_entropy(),
-    }
-}
-
 #[derive(Clone, Debug)]
-pub struct Layer<G, L> {
+pub struct Layer<G, RMake> {
     get_routes: G,
-    route_layer: L,
+    make_route: RMake,
     /// This is saved into a field so that the same `Arc`s are used and
     /// cloned, instead of calling `Route::default()` every time.
     default_route: Route,
@@ -44,11 +30,11 @@ pub struct Layer<G, L> {
 }
 
 #[derive(Clone, Debug)]
-pub struct MakeSvc<G, CMake, L> {
-    get_routes: G,
-    make_concrete: CMake,
-    route_layer: L,
+pub struct MakeSvc<G, RMake, CMake> {
     default_route: Route,
+    get_routes: G,
+    make_route: RMake,
+    make_concrete: CMake,
     rng: SmallRng,
 }
 
@@ -63,42 +49,50 @@ where
     concrete: Concrete<T, CMake>,
 }
 
-impl<G, CMake, L> tower::layer::Layer<CMake> for Layer<G, L>
+impl<G, RMake> Layer<G, RMake>
 where
     G: GetRoutes + Clone,
-    L: Clone,
+    RMake: Clone,
 {
-    type Service = MakeSvc<G, CMake, L>;
+    pub fn new(get_routes: G, make_route: RMake) -> Self {
+        Self {
+            get_routes,
+            make_route,
+            default_route: Route::default(),
+            rng: SmallRng::from_entropy(),
+        }
+    }
+}
+
+impl<G, RMake, CMake> tower::layer::Layer<CMake> for Layer<G, RMake>
+where
+    G: GetRoutes + Clone,
+    RMake: Clone,
+{
+    type Service = MakeSvc<G, RMake, CMake>;
 
     fn layer(&self, make_concrete: CMake) -> Self::Service {
         MakeSvc {
             make_concrete,
             get_routes: self.get_routes.clone(),
-            route_layer: self.route_layer.clone(),
+            make_route: self.make_route.clone(),
             default_route: self.default_route.clone(),
             rng: self.rng.clone(),
         }
     }
 }
 
-impl<G, CMake, L, T> tower::Service<T> for MakeSvc<G, CMake, L>
+impl<T, G, RMake, CMake> Make<T> for MakeSvc<G, RMake, CMake>
 where
     G: GetRoutes,
     T: CanGetDestination + WithRoute + WithAddr + Clone,
+    RMake: Make<T::Output> + Clone,
     CMake: Make<T> + Clone,
-    L: tower::layer::Layer<()> + Clone,
-    L::Service: Make<T::Output> + Clone,
 {
-    type Response = Service<T, G::Stream, L::Service, CMake>;
-    type Error = Never;
-    type Future = future::FutureResult<Self::Response, Self::Error>;
+    type Service = Service<T, G::Stream, RMake, CMake>;
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(().into()) // always ready to make a Router
-    }
-
-    fn call(&mut self, target: T) -> Self::Future {
-        let updates = match target.get_destination() {
+    fn make(&self, target: T) -> Self::Service {
+        let profiles = match target.get_destination() {
             Some(ref dst) => self.get_routes.get_routes(&dst),
             None => {
                 debug!("no destination for routes");
@@ -106,14 +100,15 @@ where
             }
         };
 
-        future::ok(Service::new(
-            target,
-            updates,
-            self.route_layer.layer(()),
-            self.default_route.clone(),
-            self.make_concrete.clone(),
-            self.rng.clone(),
-        ))
+        Service {
+            profiles,
+            requests: Requests::new(
+                target.clone(),
+                self.make_route.clone(),
+                self.default_route.clone(),
+            ),
+            concrete: Concrete::forward(target, self.make_concrete.clone(), self.rng.clone()),
+        }
     }
 }
 
@@ -124,21 +119,6 @@ where
     RMake: Make<T::Output>,
     CMake: Make<T>,
 {
-    fn new(
-        target: T,
-        profiles: Option<P>,
-        make_route: RMake,
-        default_route: Route,
-        make_concrete: CMake,
-        rng: SmallRng,
-    ) -> Self {
-        Self {
-            profiles,
-            requests: Requests::new(target.clone(), make_route, default_route),
-            concrete: Concrete::forward(target, make_concrete, rng),
-        }
-    }
-
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
     fn poll_update(&mut self) {
@@ -165,8 +145,8 @@ impl<B, T, P, RMake, CMake, R, C> tower::Service<http::Request<B>> for Service<T
 where
     T: WithRoute + WithAddr + Clone,
     P: Stream<Item = Routes, Error = Never>,
-    CMake: Make<T, Value = C>,
-    RMake: Make<T::Output, Value = R>,
+    CMake: Make<T, Service = C>,
+    RMake: Make<T::Output, Service = R>,
     R: Proxy<http::Request<B>, Concrete<T, CMake>>,
     R::Error: Into<Error>,
     C: tower::Service<R::Request>,

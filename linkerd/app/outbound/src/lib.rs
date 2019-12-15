@@ -20,7 +20,8 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc, trace, trace_context,
+    svc::{self, Make},
+    trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     Addr, Conditional, DispatchDeadline, Error, ProxyMetrics, CANONICAL_DST_HEADER,
     DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
@@ -125,6 +126,7 @@ impl<A: OrigDstAddr> Config<A> {
             let client_stack = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
+                .push_pending()
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
@@ -132,7 +134,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
-                .push(http::normalize_uri::layer());
+                .push(http::normalize_uri::layer())
+                .makes::<Endpoint>();
 
             // A per-`outbound::Endpoint` stack that:
             //
@@ -147,13 +150,13 @@ impl<A: OrigDstAddr> Config<A> {
             // 6. Strips any `l5d-server-id` that may have been received from
             //    the server, before we apply our own.
             let endpoint_stack = client_stack
-                .serves::<Endpoint>()
                 .push(http::strip_header::response::layer(L5D_REMOTE_IP))
                 .push(http::strip_header::response::layer(L5D_SERVER_ID))
                 .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
                 // disabled due to information leagkage
                 //.push(add_remote_ip_on_rsp::layer())
                 //.push(add_server_id_on_rsp::layer())
+                .makes::<Endpoint>()
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -163,7 +166,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(|endpoint: &Endpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<Endpoint>();
+                .makes::<Endpoint>();
 
             // A per-`dst::Route` layer that uses profile data to configure
             // a per-route layer.
@@ -186,8 +189,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
-                .push(classify::layer())
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract);
+                .push(classify::layer());
 
             // Routes requests to their original destination endpoints. Used as
             // a fallback when service discovery has no endpoints for a destination.
@@ -195,7 +197,7 @@ impl<A: OrigDstAddr> Config<A> {
             // If the `l5d-require-id` header is present, then that identity is
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     Endpoint::from_request,
@@ -215,12 +217,14 @@ impl<A: OrigDstAddr> Config<A> {
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
-            let distributor = endpoint_stack
+            let distributor = svc::stack(endpoint_stack.into_inner().into_service())
                 .serves::<Endpoint>()
                 .push(fallback::layer(
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
+                .push_pending()
+                .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
                 ));
@@ -233,13 +237,8 @@ impl<A: OrigDstAddr> Config<A> {
             // 3. Creates a load balancer , configured by resolving the
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
-                .serves::<DstAddr>()
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<DstAddr>()
-                .push(http::profiles::router::layer(
-                    profiles_client,
-                    dst_route_layer,
-                ))
+                .push(http::profiles::Layer::new(profiles_client, dst_route_layer))
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
             // Routes request using the `DstAddr` extension.

@@ -17,6 +17,8 @@ pub mod recognize;
 mod requests;
 pub mod service;
 
+pub use self::service::Layer;
+
 #[derive(Clone, Debug)]
 pub struct WeightedAddr {
     pub addr: NameAddr,

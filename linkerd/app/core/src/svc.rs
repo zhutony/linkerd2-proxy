@@ -1,7 +1,9 @@
+// Possibly unused, but useful during development.
+#![allow(dead_code)]
+
 use crate::proxy::{buffer, http, pending};
 use crate::Error;
-pub use linkerd2_router::Make;
-pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Shared};
+pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Make, Shared};
 pub use linkerd2_timeout::stack as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
@@ -18,6 +20,9 @@ pub struct Layers<L>(L);
 #[derive(Clone, Debug)]
 pub struct Stack<S>(S);
 
+#[derive(Clone, Debug)]
+pub struct Proxies<P>(P);
+
 pub fn layers() -> Layers<Identity> {
     Layers(Identity::new())
 }
@@ -26,8 +31,10 @@ pub fn stack<S>(inner: S) -> Stack<S> {
     Stack(inner)
 }
 
-// Possibly unused, but useful during development.
-#[allow(dead_code)]
+pub fn proxies() -> Proxies<()> {
+    Proxies(())
+}
+
 impl<L> Layers<L> {
     pub fn push<O>(self, outer: O) -> Layers<Pair<L, O>> {
         Layers(Pair::new(self.0, outer))
@@ -39,16 +46,12 @@ impl<L> Layers<L> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer_pending<D, Req>(
-        self,
-        bound: usize,
-        d: D,
-    ) -> Layers<Pair<Pair<L, pending::Layer>, buffer::Layer<D, Req>>>
+    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Layers<Pair<L, buffer::Layer<D, Req>>>
     where
         D: buffer::Deadline<Req>,
         Req: Send + 'static,
     {
-        self.push_pending().push(buffer::layer(bound, d))
+        self.push(buffer::layer(bound, d))
     }
 
     pub fn push_spawn_ready(self) -> Layers<Pair<L, SpawnReadyLayer>> {
@@ -72,8 +75,6 @@ impl<M, L: Layer<M>> Layer<M> for Layers<L> {
     }
 }
 
-// Possibly unused, but useful during development.
-#[allow(dead_code)]
 impl<S> Stack<S> {
     pub fn push<L: Layer<S>>(self, layer: L) -> Stack<L::Service> {
         Stack(layer.layer(self.0))
@@ -85,16 +86,12 @@ impl<S> Stack<S> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer_pending<D, Req>(
-        self,
-        bound: usize,
-        d: D,
-    ) -> Stack<buffer::Make<pending::MakePending<S>, D, Req>>
+    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
     where
         D: buffer::Deadline<Req>,
         Req: Send + 'static,
     {
-        self.push_pending().push(buffer::layer(bound, d))
+        self.push(buffer::layer(bound, d))
     }
 
     pub fn push_spawn_ready(self) -> Stack<tower_spawn_ready::MakeSpawnReady<S>> {
@@ -143,6 +140,17 @@ impl<S> Stack<S> {
     }
 }
 
+impl<T, S> Make<T> for Stack<S>
+where
+    S: Make<T>,
+{
+    type Service = S::Service;
+
+    fn make(&self, t: T) -> Self::Service {
+        self.0.make(t)
+    }
+}
+
 impl<T, S> Service<T> for Stack<S>
 where
     S: Service<T>,
@@ -157,5 +165,34 @@ where
 
     fn call(&mut self, t: T) -> Self::Future {
         self.0.call(t)
+    }
+}
+
+impl<P> Proxies<P> {
+    pub fn push<L: Layer<P>>(self, layer: L) -> Proxies<L::Service> {
+        Proxies(layer.layer(self.0))
+    }
+
+    /// Validates that this stack makes T-typed targets.
+    pub fn makes<T>(self) -> Self
+    where
+        P: Make<T>,
+    {
+        self
+    }
+
+    pub fn into_inner(self) -> P {
+        self.0
+    }
+}
+
+impl<T, P> Make<T> for Proxies<P>
+where
+    P: Make<T>,
+{
+    type Service = P::Service;
+
+    fn make(&self, t: T) -> Self::Service {
+        self.0.make(t)
     }
 }

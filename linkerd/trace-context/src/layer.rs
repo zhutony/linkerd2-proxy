@@ -1,5 +1,6 @@
 use super::{propagation, Span, SpanSink};
 use futures::{try_ready, Async, Future, Poll};
+use linkerd2_stack::Make;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::{trace, warn};
@@ -61,6 +62,23 @@ where
 }
 
 // === impl Stack ===
+
+impl<T, M, S> Make<T> for Stack<M, S>
+where
+    M: Make<T>,
+    S: Clone,
+{
+    type Service = Service<M::Service, S>;
+
+    fn make(&self, target: T) -> Self::Service {
+        let inner = self.inner.make(target);
+
+        Service {
+            inner,
+            sink: self.sink.clone(),
+        }
+    }
+}
 
 impl<T, M, S> tower::Service<T> for Stack<M, S>
 where

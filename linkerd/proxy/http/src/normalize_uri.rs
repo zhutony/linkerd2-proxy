@@ -4,7 +4,7 @@ use super::{
 };
 use futures::{try_ready, Future, Poll};
 use http;
-use linkerd2_stack::layer;
+use linkerd2_stack::{layer, Make};
 
 #[derive(Clone, Debug)]
 pub struct Stack<N> {
@@ -32,6 +32,25 @@ pub fn layer<M>() -> impl layer::Layer<M, Service = Stack<M>> + Copy {
 }
 
 // === impl Stack ===
+
+impl<T, M> Make<T> for Stack<M>
+where
+    T: HasSettings,
+    M: Make<T>,
+{
+    type Service = tower::util::Either<Service<M::Service>, M::Service>;
+
+    fn make(&self, target: T) -> Self::Service {
+        let should_normalize_uri = should_normalize_uri(target.http_settings());
+        let inner = self.inner.make(target);
+
+        if should_normalize_uri {
+            tower::util::Either::A(Service { inner })
+        } else {
+            tower::util::Either::B(inner)
+        }
+    }
+}
 
 impl<T, M> tower::Service<T> for Stack<M>
 where

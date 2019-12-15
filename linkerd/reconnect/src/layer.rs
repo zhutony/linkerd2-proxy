@@ -1,6 +1,7 @@
 use super::Service;
 use futures::{future, Poll};
 use linkerd2_error::{Error, Never, Recover};
+use linkerd2_stack::make::{self, Make};
 
 #[derive(Clone, Debug)]
 pub struct Layer<R: Recover> {
@@ -36,6 +37,23 @@ where
 }
 
 // === impl MakeService ===
+
+impl<T, R, M> Make<T> for MakeService<R, M>
+where
+    T: Clone,
+    R: Recover + Clone,
+    M: Make<T> + Clone,
+{
+    type Service = Service<T, R, make::MakeService<M>>;
+
+    fn make(&self, target: T) -> Self::Service {
+        Service::new(
+            target,
+            self.make_service.clone().into_service(),
+            self.recover.clone(),
+        )
+    }
+}
 
 impl<T, R, M> tower::Service<T> for MakeService<R, M>
 where

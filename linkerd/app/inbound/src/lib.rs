@@ -10,7 +10,7 @@ use linkerd2_app_core::{
     self as core, classify,
     config::{ProxyConfig, ServerConfig},
     drain,
-    dst::DstAddr,
+    dst::{DstAddr, Route},
     errors, http_request_authority_addr, http_request_host_addr,
     http_request_l5d_override_dst_addr, http_request_orig_dst_addr,
     opencensus::proto::trace::v1 as oc,
@@ -116,6 +116,8 @@ impl<A: OrigDstAddr> Config<A> {
             let client_stack = connect_stack
                 .clone()
                 .push(client::layer(connect.h2_settings))
+                .push_pending()
+                .makes::<Endpoint>()
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
@@ -123,7 +125,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
-                .push(normalize_uri::layer());
+                .push(normalize_uri::layer())
+                .makes::<Endpoint>();
 
             // A stack configured by `router::Config`, responsible for building
             // a router made of route stacks configured by `inbound::Endpoint`.
@@ -132,11 +135,11 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
                 ))
-                .serves::<Endpoint>()
                 .push(trace::layer(
                     |endpoint: &Endpoint| info_span!("endpoint", peer.addr = %endpoint.addr),
                 ))
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .makes::<Endpoint>()
+                .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<Endpoint>()
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
@@ -151,13 +154,13 @@ impl<A: OrigDstAddr> Config<A> {
             // The `classify` module installs a `classify::Response`
             // extension into each request so that all lower metrics
             // implementations can use the route-specific configuration.
-            let dst_route_layer = svc::layers()
+            let make_dst_route_proxy = svc::proxies()
                 .push(insert::target::layer())
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
                 .push(classify::layer())
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract);
+                .makes::<Route>();
 
             // A per-`DstAddr` stack that does the following:
             //
@@ -167,8 +170,7 @@ impl<A: OrigDstAddr> Config<A> {
             //    `RecognizeEndpoint` can use the value.
             let dst_stack = svc::stack(svc::Shared::new(endpoint_router))
                 .push(insert::target::layer())
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
-                .push(profiles::router::layer(profiles_client, dst_route_layer))
+                .push(profiles::Layer::new(profiles_client, make_dst_route_proxy))
                 .push(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", dst = %dst.dst_logical()),
@@ -193,7 +195,7 @@ impl<A: OrigDstAddr> Config<A> {
             // 6. Finally, if the tls::accept::Meta had an SO_ORIGINAL_DST, this TCP
             // address is used.
             let dst_router = dst_stack
-                .push_buffer_pending(buffer.max_in_flight, DispatchDeadline::extract)
+                .makes::<DstAddr>()
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
@@ -233,7 +235,8 @@ impl<A: OrigDstAddr> Config<A> {
             // the proxy is overloaded.
             let admission_control = svc::stack(dst_router)
                 .push_concurrency_limit(buffer.max_in_flight)
-                .push_load_shed();
+                .push_load_shed()
+                .into_inner();
 
             // As HTTP requests are accepted, the `tls::accept::Meta` connection
             // metadata is stored on each request's extensions.
@@ -242,15 +245,16 @@ impl<A: OrigDstAddr> Config<A> {
             // `orig-proto` headers. This happens in the source stack so that
             // the router need not detect whether a request _will be_ downgraded.
             let source_stack = svc::stack(svc::Shared::new(admission_control))
-                .serves::<tls::accept::Meta>()
                 .push(orig_proto_downgrade::layer())
                 .push(insert::target::layer())
+                .makes::<tls::accept::Meta>()
                 // disabled due to information leagkage
                 //.push(set_remote_ip_on_req::layer())
                 //.push(set_client_id_on_req::layer())
                 .push(strip_header::request::layer(L5D_REMOTE_IP))
                 .push(strip_header::request::layer(L5D_CLIENT_ID))
                 .push(strip_header::response::layer(L5D_SERVER_ID))
+                .makes::<tls::accept::Meta>()
                 .push(insert::layer(move || {
                     DispatchDeadline::after(buffer.dispatch_timeout)
                 }))
@@ -266,7 +270,8 @@ impl<A: OrigDstAddr> Config<A> {
                     SpanConverter::server(span_sink, trace_labels())
                 })))
                 .push(metrics.http_handle_time.layer())
-                .serves::<tls::accept::Meta>();
+                .makes::<tls::accept::Meta>()
+                .into_inner();
 
             let forward_tcp = tcp::Forward::new(
                 svc::stack(connect_stack)

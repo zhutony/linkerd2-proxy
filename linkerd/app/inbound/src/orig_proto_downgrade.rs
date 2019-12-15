@@ -1,4 +1,3 @@
-use futures::{Future, Poll};
 use http;
 use linkerd2_app_core::{proxy::http::orig_proto, svc, transport::tls};
 use std::marker::PhantomData;
@@ -50,26 +49,19 @@ impl<M: Clone, A, B> Clone for Stack<M, A, B> {
     }
 }
 
-impl<M, A, B> svc::Service<tls::accept::Meta> for Stack<M, A, B>
+impl<M, A, B> svc::Make<tls::accept::Meta> for Stack<M, A, B>
 where
-    M: svc::MakeService<tls::accept::Meta, http::Request<A>, Response = http::Response<B>>,
+    M: svc::Make<tls::accept::Meta>,
+    M::Service: svc::Service<http::Request<A>, Response = http::Response<B>>,
 {
-    type Response = orig_proto::Downgrade<M::Service>;
-    type Error = M::MakeError;
-    type Future = futures::future::Map<M::Future, fn(M::Service) -> Self::Response>;
+    type Service = orig_proto::Downgrade<M::Service>;
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, target: tls::accept::Meta) -> Self::Future {
+    fn make(&self, target: tls::accept::Meta) -> Self::Service {
         trace!(
             "supporting {} downgrades for source={:?}",
             orig_proto::L5D_ORIG_PROTO,
             target,
         );
-        self.inner
-            .make_service(target)
-            .map(orig_proto::Downgrade::new)
+        orig_proto::Downgrade::new(self.inner.make(target))
     }
 }

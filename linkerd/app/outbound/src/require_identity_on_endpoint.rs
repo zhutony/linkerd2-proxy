@@ -38,10 +38,7 @@ pub fn layer<A, B>() -> Layer<A, B> {
     Layer(PhantomData)
 }
 
-impl<M, A, B> svc::Layer<M> for Layer<A, B>
-where
-    M: svc::MakeService<Endpoint, http::Request<A>, Response = http::Response<B>>,
-{
+impl<M, A, B> svc::Layer<M> for Layer<A, B> {
     type Service = MakeSvc<M, A, B>;
 
     fn layer(&self, inner: M) -> Self::Service {
@@ -59,6 +56,24 @@ impl<A, B> Clone for Layer<A, B> {
 }
 
 // ===== impl MakeSvc =====
+
+impl<M, A, B> svc::Make<Endpoint> for MakeSvc<M, A, B>
+where
+    M: svc::Make<Endpoint>,
+    M::Service: svc::Service<http::Request<A>, Response = http::Response<B>>,
+{
+    type Service = RequireIdentity<M::Service, A, B>;
+
+    fn make(&self, target: Endpoint) -> Self::Service {
+        let peer_identity = target.peer_identity().clone();
+        let inner = self.inner.make(target);
+        RequireIdentity {
+            peer_identity,
+            inner,
+            _marker: PhantomData,
+        }
+    }
+}
 
 impl<M, A, B> svc::Service<Endpoint> for MakeSvc<M, A, B>
 where

@@ -1,5 +1,6 @@
 use futures::{try_ready, Future, Poll};
 use http::header::AsHeaderName;
+use linkerd2_stack::Make;
 use std::marker::PhantomData;
 
 /// Wraps HTTP `Service` `Stack<T>`s so that a given header is removed from a
@@ -7,7 +8,7 @@ use std::marker::PhantomData;
 #[derive(Clone, Debug)]
 pub struct Layer<H, R> {
     header: H,
-    _req_or_res: PhantomData<fn(R)>,
+    _marker: PhantomData<fn(R)>,
 }
 
 /// Wraps an HTTP `Service` so that a given header is removed from each
@@ -16,20 +17,20 @@ pub struct Layer<H, R> {
 pub struct Stack<H, M, R> {
     header: H,
     inner: M,
-    _req_or_res: PhantomData<fn(R)>,
+    _marker: PhantomData<fn(R)>,
 }
 
 pub struct MakeFuture<H, F, R> {
     header: H,
     inner: F,
-    _req_or_res: PhantomData<fn(R)>,
+    _marker: PhantomData<fn(R)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Service<H, S, R> {
     header: H,
     inner: S,
-    _req_or_res: PhantomData<fn(R)>,
+    _marker: PhantomData<fn(R)>,
 }
 
 // === impl Layer ===
@@ -42,7 +43,7 @@ where
 {
     Layer {
         header,
-        _req_or_res: PhantomData,
+        _marker: PhantomData,
     }
 }
 
@@ -56,33 +57,27 @@ where
         Stack {
             header: self.header.clone(),
             inner,
-            _req_or_res: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
 
 // === impl Stack ===
 
-impl<H, T, M, R> tower::Service<T> for Stack<H, M, R>
+impl<H, T, M, R> Make<T> for Stack<H, M, R>
 where
     H: AsHeaderName + Clone,
-    M: tower::Service<T>,
+    M: Make<T>,
 {
-    type Response = Service<H, M::Response, R>;
-    type Error = M::Error;
-    type Future = MakeFuture<H, M::Future, R>;
+    type Service = Service<H, M::Service, R>;
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, t: T) -> Self::Future {
-        let inner = self.inner.call(t);
+    fn make(&self, t: T) -> Self::Service {
+        let inner = self.inner.make(t);
         let header = self.header.clone();
-        MakeFuture {
+        Service {
             header,
             inner,
-            _req_or_res: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
@@ -102,7 +97,7 @@ where
         Ok(Service {
             header: self.header.clone(),
             inner,
-            _req_or_res: PhantomData,
+            _marker: PhantomData,
         }
         .into())
     }
@@ -112,6 +107,7 @@ pub mod request {
     use futures::Poll;
     use http;
     use http::header::AsHeaderName;
+    use linkerd2_stack::Proxy;
 
     pub fn layer<H>(header: H) -> super::Layer<H, ReqHeader>
     where
@@ -123,6 +119,23 @@ pub mod request {
     /// Marker type used to specify that the `Request` headers should be stripped.
     #[derive(Clone, Debug)]
     pub enum ReqHeader {}
+
+    impl<H, P, S, B> Proxy<http::Request<B>, S> for super::Service<H, P, ReqHeader>
+    where
+        P: Proxy<http::Request<B>, S>,
+        H: AsHeaderName + Clone,
+        S: tower::Service<P::Request>,
+    {
+        type Request = P::Request;
+        type Response = P::Response;
+        type Error = P::Error;
+        type Future = P::Future;
+
+        fn proxy(&self, svc: &mut S, mut req: http::Request<B>) -> Self::Future {
+            req.headers_mut().remove(self.header.clone());
+            self.inner.proxy(svc, req)
+        }
+    }
 
     impl<H, S, B> tower::Service<http::Request<B>> for super::Service<H, S, ReqHeader>
     where

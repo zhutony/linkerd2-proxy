@@ -1,6 +1,7 @@
 #![deny(warnings, rust_2018_idioms)]
 
 use futures::{Future, Poll};
+use linkerd2_stack::Proxy;
 use std::time::Duration;
 use tokio_connect::Connect;
 use tokio_timer as timer;
@@ -44,12 +45,31 @@ impl<T> Timeout<T> {
     }
 }
 
-impl<S, T, Req> svc::Service<Req> for Timeout<S>
+impl<P, S, Req> Proxy<Req, S> for Timeout<P>
 where
-    S: svc::Service<Req, Response = T>,
+    P: Proxy<Req, S>,
+    S: svc::Service<P::Request>,
+{
+    type Request = P::Request;
+    type Response = P::Response;
+    type Error = Error;
+    type Future = Timeout<timer::Timeout<P::Future>>;
+
+    fn proxy(&self, svc: &mut S, req: Req) -> Self::Future {
+        let inner = timer::Timeout::new(self.inner.proxy(svc, req), self.duration);
+        Timeout {
+            inner,
+            duration: self.duration,
+        }
+    }
+}
+
+impl<S, Req> svc::Service<Req> for Timeout<S>
+where
+    S: svc::Service<Req>,
     S::Error: Into<Error>,
 {
-    type Response = T;
+    type Response = S::Response;
     type Error = Error;
     type Future = Timeout<timer::Timeout<S::Future>>;
 
@@ -91,6 +111,7 @@ where
 {
     type Item = F::Item;
     type Error = Error;
+
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll().map_err(|e| self.timeout_error(e))
     }

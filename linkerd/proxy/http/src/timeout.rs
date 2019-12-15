@@ -1,8 +1,9 @@
-use futures::{future, try_ready, Future, Poll};
-use http::{Request, Response, StatusCode};
+use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
+use linkerd2_stack::Proxy;
 use linkerd2_timeout::{error, Timeout};
 use std::time::Duration;
+use tokio::timer;
 use tracing::{debug, error};
 
 /// Implement on targets to determine if a service has a timeout.
@@ -87,38 +88,69 @@ impl<F: Future> Future for MakeFuture<F> {
     }
 }
 
-impl<S, B1, B2> tower::Service<Request<B1>> for Service<S>
+impl<P, S, A, B> Proxy<http::Request<A>, S> for Service<P>
 where
-    S: tower::Service<Request<B1>, Response = Response<B2>>,
+    P: Proxy<http::Request<A>, S, Response = http::Response<B>>,
+    S: tower::Service<P::Request>,
+    B: Default,
+{
+    type Request = P::Request;
+    type Response = P::Response;
+    type Error = Error;
+    type Future = ResponseFuture<P::Future, B>;
+
+    fn proxy(&self, svc: &mut S, req: http::Request<A>) -> Self::Future {
+        ResponseFuture(self.0.proxy(svc, req), std::marker::PhantomData)
+    }
+}
+
+impl<S, A, B> tower::Service<http::Request<A>> for Service<S>
+where
+    S: tower::Service<http::Request<A>, Response = http::Response<B>>,
     S::Error: Into<Error>,
-    B2: Default,
+    B: Default,
 {
     type Response = S::Response;
     type Error = Error;
-    type Future = future::OrElse<
-        <Timeout<S> as tower::Service<Request<B1>>>::Future,
-        Result<Response<B2>, Error>,
-        fn(Error) -> Result<Response<B2>, Error>,
-    >;
+    type Future = ResponseFuture<S::Future, B>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.0.poll_ready()
     }
 
-    fn call(&mut self, req: Request<B1>) -> Self::Future {
-        self.0.call(req).or_else(|err| {
+    fn call(&mut self, req: http::Request<A>) -> Self::Future {
+        ResponseFuture(self.0.call(req), std::marker::PhantomData)
+    }
+}
+
+pub struct ResponseFuture<F, B>(
+    Timeout<timer::Timeout<F>>,
+    std::marker::PhantomData<fn() -> B>,
+);
+
+impl<F, B> Future for ResponseFuture<F, B>
+where
+    B: Default,
+    F: Future<Item = http::Response<B>>,
+    F::Error: Into<Error>,
+{
+    type Item = http::Response<B>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.0.poll().or_else(|err| {
             if let Some(err) = err.downcast_ref::<error::Timedout>() {
                 debug!("request timed out after {:?}", err.duration());
-                let mut res = Response::default();
-                *res.status_mut() = StatusCode::GATEWAY_TIMEOUT;
+                let mut res = http::Response::default();
+                *res.status_mut() = http::StatusCode::GATEWAY_TIMEOUT;
                 res.extensions_mut().insert(ProxyTimedOut(()));
-                return Ok(res);
+                return Ok(res.into());
             } else if let Some(err) = err.downcast_ref::<error::Timer>() {
                 // These are unexpected, and mean the runtime is in a bad place.
                 error!("unexpected runtime timer error: {}", err);
-                let mut res = Response::default();
-                *res.status_mut() = StatusCode::BAD_GATEWAY;
-                return Ok(res);
+                let mut res = http::Response::default();
+                *res.status_mut() = http::StatusCode::BAD_GATEWAY;
+                return Ok(res.into());
             }
 
             // else

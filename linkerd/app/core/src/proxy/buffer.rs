@@ -1,7 +1,7 @@
 use crate::svc;
 use futures::{try_ready, Async, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_router as rt;
+use linkerd2_stack as stack;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -122,7 +122,7 @@ impl<M: Clone, D: Clone, Req> Clone for Make<M, D, Req> {
 
 impl<T, M, D, Req> svc::Service<T> for Make<M, D, Req>
 where
-    T: fmt::Display + Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static,
     M: svc::Service<T>,
     M::Response: svc::Service<Req> + Send + 'static,
     M::Error: Into<Error>,
@@ -151,41 +151,21 @@ where
     }
 }
 
-impl<T, M, D, Req> rt::Make<T> for Make<M, D, Req>
+impl<T, M, D, Req> stack::Make<T> for Make<M, D, Req>
 where
-    T: fmt::Display + Clone + Send + Sync + 'static,
-    M: rt::Make<T>,
-    M::Value: svc::Service<Req> + Send + 'static,
-    <M::Value as svc::Service<Req>>::Future: Send,
-    <M::Value as svc::Service<Req>>::Error: Into<Error>,
+    T: Clone + Send + Sync + 'static,
+    M: stack::Make<T>,
+    M::Service: svc::Service<Req> + Send + 'static,
+    <M::Service as svc::Service<Req>>::Future: Send,
+    <M::Service as svc::Service<Req>>::Error: Into<Error>,
     D: Deadline<Req>,
     Req: Send + 'static,
 {
-    type Value = Enqueue<M::Value, D, Req>;
+    type Service = Enqueue<M::Service, D, Req>;
 
-    fn make(&self, target: &T) -> Self::Value {
+    fn make(&self, target: T) -> Self::Service {
         Enqueue::new(
             self.inner.make(target),
-            self.deadline.clone(),
-            self.capacity,
-        )
-    }
-}
-
-impl<M, D, Req> Make<M, D, Req> {
-    /// Creates a buffer immediately.
-    pub fn make<T>(&self, target: T) -> Enqueue<M::Value, D, Req>
-    where
-        T: fmt::Display + Clone + Send + Sync + 'static,
-        M: rt::Make<T>,
-        M::Value: svc::Service<Req> + Send + 'static,
-        <M::Value as svc::Service<Req>>::Future: Send,
-        <M::Value as svc::Service<Req>>::Error: Into<Error>,
-        Req: Send + 'static,
-        D: Deadline<Req> + Clone,
-    {
-        Enqueue::new(
-            self.inner.make(&target),
             self.deadline.clone(),
             self.capacity,
         )

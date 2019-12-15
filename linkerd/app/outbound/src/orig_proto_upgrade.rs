@@ -31,10 +31,7 @@ impl<A, B> Clone for Layer<A, B> {
     }
 }
 
-impl<M, A, B> svc::Layer<M> for Layer<A, B>
-where
-    M: svc::MakeService<Endpoint, http::Request<A>, Response = http::Response<B>>,
-{
+impl<M, A, B> svc::Layer<M> for Layer<A, B> {
     type Service = MakeSvc<M, A, B>;
 
     fn layer(&self, inner: M) -> Self::Service {
@@ -52,6 +49,34 @@ impl<M: Clone, A, B> Clone for MakeSvc<M, A, B> {
         MakeSvc {
             inner: self.inner.clone(),
             _marker: PhantomData,
+        }
+    }
+}
+
+impl<M, A, B> svc::Make<Endpoint> for MakeSvc<M, A, B>
+where
+    M: svc::Make<Endpoint>,
+    M::Service: svc::Service<http::Request<A>, Response = http::Response<B>>,
+{
+    type Service = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
+
+    fn make(&self, mut endpoint: Endpoint) -> Self::Service {
+        let can_upgrade = endpoint.can_use_orig_proto();
+
+        if can_upgrade {
+            trace!(
+                "supporting {} upgrades for endpoint={:?}",
+                orig_proto::L5D_ORIG_PROTO,
+                endpoint,
+            );
+            endpoint.http_settings = Settings::Http2;
+        }
+        let inner = self.inner.make(endpoint);
+
+        if can_upgrade {
+            svc::Either::A(orig_proto::Upgrade::new(inner))
+        } else {
+            svc::Either::B(inner)
         }
     }
 }

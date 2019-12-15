@@ -189,7 +189,8 @@ impl<T> GetSpan<T> for tracing::Span {
 
 pub mod layer {
     use super::GetSpan;
-    use futures::{future, Future, Poll};
+    use futures::Poll;
+    use linkerd2_stack::{Make, Proxy};
     use tracing::Span;
     use tracing_futures::{Instrument, Instrumented};
 
@@ -198,15 +199,15 @@ pub mod layer {
         _marker: std::marker::PhantomData<fn(T)>,
     }
 
-    pub struct Make<T, G: GetSpan<T>, M: tower::Service<T>> {
+    pub struct MakeSpan<T, G: GetSpan<T>, M: Make<T>> {
         get_span: G,
         make: M,
         _marker: std::marker::PhantomData<fn(T)>,
     }
 
-    pub struct Service<S> {
+    pub struct SetSpan<S> {
         span: Span,
-        service: S,
+        inner: S,
     }
 
     impl<T, G: GetSpan<T> + Clone> Layer<T, G> {
@@ -233,8 +234,8 @@ pub mod layer {
         }
     }
 
-    impl<T, G: GetSpan<T> + Clone, M: tower::Service<T>> tower::layer::Layer<M> for Layer<T, G> {
-        type Service = Make<T, G, M>;
+    impl<T, G: GetSpan<T> + Clone, M: Make<T>> tower::layer::Layer<M> for Layer<T, G> {
+        type Service = MakeSpan<T, G, M>;
 
         fn layer(&self, make: M) -> Self::Service {
             Self::Service {
@@ -245,7 +246,7 @@ pub mod layer {
         }
     }
 
-    impl<T, G: GetSpan<T> + Clone, M: tower::Service<T> + Clone> Clone for Make<T, G, M> {
+    impl<T, G: GetSpan<T> + Clone, M: Make<T> + Clone> Clone for MakeSpan<T, G, M> {
         fn clone(&self) -> Self {
             Self {
                 make: self.make.clone(),
@@ -255,50 +256,58 @@ pub mod layer {
         }
     }
 
-    impl<T, G: GetSpan<T>, M: tower::Service<T>> tower::Service<T> for Make<T, G, M> {
-        type Response = Service<M::Response>;
-        type Error = M::Error;
-        type Future = Instrumented<future::Map<M::Future, fn(M::Response) -> Service<M::Response>>>;
+    impl<T, G: GetSpan<T>, M: Make<T>> Make<T> for MakeSpan<T, G, M> {
+        type Service = SetSpan<M::Service>;
 
-        fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-            self.make.poll_ready()
-        }
-
-        fn call(&mut self, target: T) -> Self::Future {
+        fn make(&self, target: T) -> Self::Service {
             let span = self.get_span.get_span(&target);
             let _enter = span.enter();
 
-            // `span` is not passed through to avoid making `new_svc` capture...
-            let new_svc: fn(M::Response) -> Service<M::Response> = |service| Service {
-                service,
-                span: Span::current(),
-            };
-            self.make.call(target).map(new_svc).instrument(span.clone())
+            SetSpan {
+                inner: self.make.make(target),
+                span: span.clone(),
+            }
         }
     }
 
-    impl<S: Clone> Clone for Service<S> {
+    impl<S: Clone> Clone for SetSpan<S> {
         fn clone(&self) -> Self {
             Self {
-                service: self.service.clone(),
+                inner: self.inner.clone(),
                 span: self.span.clone(),
             }
         }
     }
 
-    impl<Req, S: tower::Service<Req>> tower::Service<Req> for Service<S> {
+    impl<Req, S, P> Proxy<Req, S> for SetSpan<P>
+    where
+        P: Proxy<Req, S>,
+        S: tower::Service<P::Request>,
+    {
+        type Request = P::Request;
+        type Response = P::Response;
+        type Error = P::Error;
+        type Future = Instrumented<P::Future>;
+
+        fn proxy(&self, svc: &mut S, req: Req) -> Self::Future {
+            let _enter = self.span.enter();
+            self.inner.proxy(svc, req).instrument(self.span.clone())
+        }
+    }
+
+    impl<Req, S: tower::Service<Req>> tower::Service<Req> for SetSpan<S> {
         type Response = S::Response;
         type Error = S::Error;
         type Future = Instrumented<S::Future>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
             let _enter = self.span.enter();
-            self.service.poll_ready()
+            self.inner.poll_ready()
         }
 
         fn call(&mut self, req: Req) -> Self::Future {
             let _enter = self.span.enter();
-            self.service.call(req).instrument(self.span.clone())
+            self.inner.call(req).instrument(self.span.clone())
         }
     }
 }

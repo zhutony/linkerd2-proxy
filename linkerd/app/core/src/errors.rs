@@ -43,6 +43,17 @@ impl<M> svc::Layer<M> for Layer {
     }
 }
 
+impl<T, M> svc::Make<T> for Stack<M>
+where
+    M: svc::Make<T>,
+{
+    type Service = Service<M::Service>;
+
+    fn make(&self, target: T) -> Self::Service {
+        Service(self.inner.make(target))
+    }
+}
+
 impl<T, M> svc::Service<T> for Stack<M>
 where
     M: svc::Service<T>,
