@@ -7,7 +7,6 @@ members = [
     "linkerd/app/integration",
     "linkerd/app/outbound",
     "linkerd/app",
-    "linkerd/buffer",
     "linkerd/conditional",
     "linkerd/dns/name",
     "linkerd/dns",
