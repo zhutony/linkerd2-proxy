@@ -341,9 +341,9 @@ mod test_util {
     }
 
     impl Make<usize> for Recognize {
-        type Value = MultiplyAndAssign;
+        type Service = MultiplyAndAssign;
 
-        fn make(&self, _: &usize) -> Self::Service {
+        fn make(&self, _: usize) -> Self::Service {
             MultiplyAndAssign::default()
         }
     }
@@ -367,9 +367,9 @@ mod test_util {
     }
 
     impl Make<usize> for MultiplyAndAssign {
-        type Value = MultiplyAndAssign;
+        type Service = MultiplyAndAssign;
 
-        fn make(&self, _: &usize) -> Self::Service {
+        fn make(&self, _: usize) -> Self::Service {
             // Don't use a clone, so that they don't affect the original Stack...
             MultiplyAndAssign(Rc::new(Cell::new(self.0.get())), self.1)
         }

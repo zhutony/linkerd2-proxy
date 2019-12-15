@@ -166,8 +166,8 @@ mod tests {
             assert!(cache.access(&1).is_some());
             assert!(cache.access(&2).is_some());
 
-            assert_eq!(cache.access(&1).take().unwrap(), 2);
-            assert_eq!(cache.access(&2).take().unwrap(), 3);
+            assert_eq!(cache.access(&1).take().unwrap(), &2);
+            assert_eq!(cache.access(&2).take().unwrap(), &3);
 
             Ok::<_, ()>(())
         }))
