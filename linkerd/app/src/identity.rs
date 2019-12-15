@@ -6,7 +6,7 @@ use linkerd2_app_core::{
     classify,
     config::{ControlAddr, ControlConfig},
     control, dns, proxy, reconnect,
-    svc::{self, LayerExt},
+    svc::{self, LayerExt, Make},
     transport::{connect, tls},
     ControlHttpMetricsRegistry as Metrics, Error, Never,
 };
@@ -58,7 +58,8 @@ impl Config {
                     ))
                     .push(proxy::grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
-                    .push_buffer_pending(
+                    .push_pending()
+                    .push_buffer(
                         control.buffer.max_in_flight,
                         control.buffer.dispatch_timeout,
                     )

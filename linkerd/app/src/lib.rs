@@ -17,6 +17,7 @@ use linkerd2_app_core::{
     config::ControlAddr,
     dns, drain,
     transport::{OrigDstAddr, SysOrigDstAddr},
+    svc::Make,
     Error,
 };
 use linkerd2_app_inbound as inbound;
@@ -137,10 +138,12 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push(http::metrics::layer::<_, classify::Response>(metrics))
                     .push(grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
-                    .push_buffer_pending(
+                    .push_pending()
+                    .push_buffer(
                         dst.control.buffer.max_in_flight,
                         dst.control.buffer.dispatch_timeout,
                     )
+                    .makes::<ControlAddr>()
                     .into_inner()
                     .make(dst.control.addr.clone());
                 dst.build(svc)

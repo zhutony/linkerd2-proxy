@@ -3,7 +3,7 @@ use futures::{future, Future};
 use linkerd2_app_core::{
     config::{ControlAddr, ControlConfig},
     control, proxy, reconnect,
-    svc::{self, LayerExt},
+    svc::{self, LayerExt, Make},
     transport::{connect, tls},
     Error,
 };
@@ -63,10 +63,12 @@ impl Config {
                     }))
                     .push(proxy::grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
-                    .push_buffer_pending(
+                    .push_pending()
+                    .push_buffer(
                         control.buffer.max_in_flight,
                         control.buffer.dispatch_timeout,
                     )
+                    .makes::<ControlAddr>()
                     .into_inner()
                     .make(addr.clone());
 
