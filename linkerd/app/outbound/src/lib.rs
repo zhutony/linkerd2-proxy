@@ -201,6 +201,7 @@ impl<A: OrigDstAddr> Config<A> {
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
                 .push_pending()
+                .push_buffer(100, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     Endpoint::from_request,
@@ -215,8 +216,7 @@ impl<A: OrigDstAddr> Config<A> {
                     DISCOVER_UPDATE_BUFFER_CAPACITY,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
-                .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
-                .push_buffer(100, DispatchDeadline::extract);
+                .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY));
 
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
@@ -228,6 +228,7 @@ impl<A: OrigDstAddr> Config<A> {
                     orig_dst_router_layer.boxed(),
                 ))
                 .push_pending()
+                .push_buffer(100, DispatchDeadline::extract)
                 .makes::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
