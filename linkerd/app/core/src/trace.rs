@@ -1,5 +1,3 @@
-const ENV_LOG: &str = "LINKERD2_PROXY_LOG";
-
 use linkerd2_error::Error;
 use std::{env, fmt, str, time::Instant};
 use tokio_timer::clock;
@@ -9,6 +7,8 @@ use tracing_subscriber::{
     fmt::{format, Builder, Context, Formatter},
     reload, EnvFilter, FmtSubscriber,
 };
+
+const ENV_LOG: &str = "LINKERD2_PROXY_LOG";
 
 type SubscriberBuilder = Builder<format::NewRecorder, Format, filter::LevelFilter>;
 type Subscriber = Formatter<format::NewRecorder, Format>;
@@ -191,7 +191,7 @@ pub mod layer {
     use super::GetSpan;
     use futures::Poll;
     use linkerd2_stack::{Make, Proxy};
-    use tracing::Span;
+    use tracing::{trace, Span};
     use tracing_futures::{Instrument, Instrumented};
 
     pub struct Layer<T, G: GetSpan<T>> {
@@ -302,11 +302,15 @@ pub mod layer {
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
             let _enter = self.span.enter();
+            trace!("poll_ready");
+
             self.inner.poll_ready()
         }
 
         fn call(&mut self, req: Req) -> Self::Future {
             let _enter = self.span.enter();
+            trace!("call");
+
             self.inner.call(req).instrument(self.span.clone())
         }
     }

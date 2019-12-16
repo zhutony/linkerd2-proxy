@@ -126,7 +126,6 @@ impl<A: OrigDstAddr> Config<A> {
             let client_stack = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
-                .push_pending()
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
@@ -135,6 +134,7 @@ impl<A: OrigDstAddr> Config<A> {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
                 .push(http::normalize_uri::layer())
+                .push_pending()
                 .makes::<Endpoint>();
 
             // A per-`outbound::Endpoint` stack that:
@@ -201,6 +201,7 @@ impl<A: OrigDstAddr> Config<A> {
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
                 .push_pending()
+                // This buffer is for readiness and not cloning.
                 .push_buffer(100, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
@@ -227,9 +228,13 @@ impl<A: OrigDstAddr> Config<A> {
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
+                .serves::<DstAddr>()
                 .push_pending()
+                // This buffer provides:
+                // - clonability to the profile router
+                // - readiness to the logical router.
                 .push_buffer(100, DispatchDeadline::extract)
-                .makes::<DstAddr>()
+                .makes_clone::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
                 ));
@@ -266,15 +271,19 @@ impl<A: OrigDstAddr> Config<A> {
                         })
                     },
                 ))
+                .serves::<Addr>()
                 .into_inner()
                 .spawn();
 
             // Canonicalizes the request-specified `Addr` via DNS, and
             // annotates each request with a refined `Addr` so that it may be
             // routed by the dst_router.
-            let addr_stack = svc::stack(svc::Shared::new(dst_router)).push(
-                http::canonicalize::layer(dns_resolver, canonicalize_timeout),
-            );
+            let addr_stack = svc::stack(svc::Shared::new(dst_router))
+                .push(http::canonicalize::layer(
+                    dns_resolver,
+                    canonicalize_timeout,
+                ))
+                .makes::<Addr>();
 
             // Routes requests to an `Addr`:
             //
@@ -296,6 +305,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(http::insert::target::layer())
                 .push(trace::layer(|addr: &Addr| info_span!("addr", %addr)))
+                // This router does not need a
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
@@ -328,13 +338,14 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(http::insert::target::layer())
                 .push(errors::layer())
-                .push(trace::layer(
-                    |src: &tls::accept::Meta| info_span!("source", target.addr = %src.addrs.target_addr()),
-                ))
                 .push(trace_context::layer(span_sink.map(|span_sink| {
                     SpanConverter::server(span_sink, trace_labels())
                 })))
-                .push(metrics.http_handle_time.layer());
+                .push(metrics.http_handle_time.layer())
+                .push(trace::layer(
+                    |src: &tls::accept::Meta| info_span!("source", target.addr = %src.addrs.target_addr()),
+                ))
+                .makes::<tls::accept::Meta>();
 
             let forward_tcp = tcp::Forward::new(
                 svc::stack(connect_stack)

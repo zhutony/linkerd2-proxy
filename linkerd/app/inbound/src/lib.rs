@@ -116,12 +116,11 @@ impl<A: OrigDstAddr> Config<A> {
             let client_stack = connect_stack
                 .clone()
                 .push(client::layer(connect.h2_settings))
-                .push_pending()
-                .makes::<Endpoint>()
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
+                .push_pending()
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
@@ -138,7 +137,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |endpoint: &Endpoint| info_span!("endpoint", peer.addr = %endpoint.addr),
                 ))
-                .makes::<Endpoint>()
                 .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<Endpoint>()
                 .push(router::Layer::new(

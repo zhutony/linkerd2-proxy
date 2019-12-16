@@ -114,27 +114,24 @@ where
     type Service = tower::util::Either<Service<M::Service>, M::Service>;
 
     fn make(&self, addr: Addr) -> Self::Service {
-        let task = match addr {
-            Addr::Name(ref na) => Some((na.clone(), self.resolver.clone(), self.timeout)),
-            Addr::Socket(_) => None,
-        };
+        let inner = self.inner.make(addr.clone());
+        match addr {
+            Addr::Socket(_) => tower::util::Either::B(inner),
+            Addr::Name(ref na) => {
+                let (tx, rx) = mpsc::channel(1);
+                let (_tx_stop, rx_stop) = oneshot::channel();
 
-        let inner = self.inner.make(addr);
+                let task = Task::new(na.clone(), self.resolver.clone(), self.timeout, tx, rx_stop);
+                tokio::spawn(task.in_current_span());
 
-        if let Some((na, resolver, timeout)) = task {
-            let (tx, rx) = mpsc::channel(1);
-            let (_tx_stop, rx_stop) = oneshot::channel();
+                tower::util::Either::A(Service {
+                    canonicalized: None,
+                    inner,
+                    rx,
+                    _tx_stop,
+                })
 
-            tokio::spawn(Task::new(na, resolver, timeout, tx, rx_stop).in_current_span());
-
-            tower::util::Either::A(Service {
-                canonicalized: None,
-                inner,
-                rx,
-                _tx_stop,
-            })
-        } else {
-            tower::util::Either::B(inner)
+            }
         }
     }
 }

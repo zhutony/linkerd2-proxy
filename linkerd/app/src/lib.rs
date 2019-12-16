@@ -16,8 +16,8 @@ pub use linkerd2_app_core::{self as core, trace};
 use linkerd2_app_core::{
     config::ControlAddr,
     dns, drain,
-    transport::{OrigDstAddr, SysOrigDstAddr},
     svc::Make,
+    transport::{OrigDstAddr, SysOrigDstAddr},
     Error,
 };
 use linkerd2_app_inbound as inbound;
