@@ -171,7 +171,6 @@ where
     type Service = Metrics<M::Service, C>;
 
     fn make(&self, target: T) -> Self::Service {
-        trace!("make: target={:?}", target);
         let metrics = match self.registry.lock() {
             Ok(mut r) => Some(
                 r.by_target
@@ -181,7 +180,6 @@ where
             ),
             Err(_) => None,
         };
-        trace!("make: metrics={}", metrics.is_some());
 
         let inner = self.inner.make(target);
 

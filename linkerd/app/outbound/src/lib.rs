@@ -231,10 +231,12 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<DstAddr>()
                 .push_pending()
                 // This buffer provides:
-                // - clonability to the profile router
-                // - readiness to the logical router.
+                // - clonability to the profile router;
+                // - readiness to the logical router;
+                // It is necessary, since the fallback router exerts
+                // backpressure untl the service is required.
                 .push_buffer(100, DispatchDeadline::extract)
-                .makes_clone::<DstAddr>()
+                .makes::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
                 ));
@@ -252,6 +254,7 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     make_dst_route_proxy.into_inner(),
                 ))
+                //.push(trace::layer(|dst: &DstAddr| info_span!("profiles")))
                 .makes::<DstAddr>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
@@ -263,6 +266,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", dst.logical = %dst.dst_logical()),
                 ))
+                // Readiness is provided by the distributor.
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
@@ -283,6 +287,10 @@ impl<A: OrigDstAddr> Config<A> {
                     dns_resolver,
                     canonicalize_timeout,
                 ))
+                // This buffer ensures readiness to the addr router, since
+                // canonicalize exerts backpressure until a name is resolved (or
+                // a timeout is hit).
+                .push_buffer(100, DispatchDeadline::extract)
                 .makes::<Addr>();
 
             // Routes requests to an `Addr`:
@@ -305,7 +313,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(http::insert::target::layer())
                 .push(trace::layer(|addr: &Addr| info_span!("addr", %addr)))
-                // This router does not need a
+                // This router does not need a buffer, since it wraps the
+                // `dst_router` which is always ready.
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
@@ -343,7 +352,9 @@ impl<A: OrigDstAddr> Config<A> {
                 })))
                 .push(metrics.http_handle_time.layer())
                 .push(trace::layer(
-                    |src: &tls::accept::Meta| info_span!("source", target.addr = %src.addrs.target_addr()),
+                    |src: &tls::accept::Meta| {
+                        info_span!("source", target.addr = %src.addrs.target_addr())
+                    },
                 ))
                 .makes::<tls::accept::Meta>();
 

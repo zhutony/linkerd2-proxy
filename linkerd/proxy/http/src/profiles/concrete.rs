@@ -1,5 +1,5 @@
 use super::{WeightedAddr, WithAddr};
-use futures::{future, try_ready, Async, Future, Poll};
+use futures::{future, Async, Future, Poll};
 use indexmap::IndexMap;
 use linkerd2_addr::NameAddr;
 use linkerd2_error::Error;
@@ -8,6 +8,7 @@ use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::SmallRng;
 use tokio::sync::watch;
 pub use tokio::sync::watch::error::SendError;
+use tracing::{debug, trace};
 
 pub fn forward<T, M>(target: T, make: M, rng: SmallRng) -> (Service<M::Service>, Update<T, M>)
 where
@@ -15,7 +16,7 @@ where
     M: Make<T>,
     M::Service: Clone,
 {
-    let routes = Inner::Forward {
+    let routes = Routes::Forward {
         addr: None,
         service: make.make(target.clone()),
     };
@@ -37,8 +38,8 @@ where
 
 #[derive(Clone, Debug)]
 pub struct Service<S> {
-    routes: Inner<S>,
-    updates: watch::Receiver<Inner<S>>,
+    routes: Routes<S>,
+    updates: watch::Receiver<Routes<S>>,
     next_split_index: Option<usize>,
     rng: SmallRng,
 }
@@ -47,12 +48,12 @@ pub struct Service<S> {
 pub struct Update<T, M: Make<T>> {
     target: T,
     make: M,
-    routes: Inner<M::Service>,
-    tx: watch::Sender<Inner<M::Service>>,
+    routes: Routes<M::Service>,
+    tx: watch::Sender<Routes<M::Service>>,
 }
 
-#[derive(Clone, Debug)]
-enum Inner<S> {
+#[derive(Clone)]
+enum Routes<S> {
     Forward {
         addr: Option<NameAddr>,
         service: S,
@@ -61,6 +62,25 @@ enum Inner<S> {
         distribution: WeightedIndex<u32>,
         services: IndexMap<NameAddr, S>,
     },
+}
+
+impl<S> std::fmt::Debug for Routes<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Routes::Forward { .. } => write!(f, "Routes::Forward(..)"),
+            Routes::Split { services, .. } => {
+                write!(f, "Routes::Split(")?;
+                let mut addrs = services.keys();
+                if let Some(a) = addrs.next() {
+                    write!(f, "{}", a)?;
+                }
+                for a in addrs {
+                    write!(f, ", {}", a)?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
 }
 
 impl<Req, S> tower::Service<Req> for Service<S>
@@ -77,6 +97,7 @@ where
             match self.updates.poll_ref().map_err(Error::from)? {
                 Async::NotReady | Async::Ready(None) => break,
                 Async::Ready(Some(routes)) => {
+                    debug!(?routes, "updated");
                     self.next_split_index = None;
                     self.routes = (*routes).clone();
                 }
@@ -84,20 +105,21 @@ where
         }
 
         match self.routes {
-            Inner::Forward {
+            Routes::Forward {
                 ref mut service, ..
-            } => {
-                try_ready!(service.poll_ready().map_err(Into::into));
-                Ok(Async::Ready(()))
-            }
+            } => service.poll_ready().map_err(Into::into),
 
-            Inner::Split {
+            Routes::Split {
                 ref distribution,
                 ref mut services,
             } => {
+                debug_assert!(services.len() > 1);
+                if self.next_split_index.is_some() {
+                    return Ok(Async::Ready(()));
+                }
+
                 // Note: this may not poll all inner services, but at least
                 // polls _some_ inner services.
-                debug_assert!(services.len() > 1);
                 for _ in 0..services.len() {
                     let idx = distribution.sample(&mut self.rng);
                     let (_, svc) = services
@@ -110,6 +132,7 @@ where
                 }
 
                 // We at least did some polling.
+                debug!(attempts = services.len(), "not ready");
                 Ok(Async::NotReady)
             }
         }
@@ -117,11 +140,11 @@ where
 
     fn call(&mut self, req: Req) -> Self::Future {
         match self.routes {
-            Inner::Forward {
+            Routes::Forward {
                 ref mut service, ..
             } => service.call(req).map_err(Into::into),
 
-            Inner::Split {
+            Routes::Split {
                 ref mut services, ..
             } => {
                 let idx = self
@@ -144,12 +167,13 @@ where
     M::Service: Clone,
 {
     pub fn set_forward(&mut self) -> Result<(), error::LostService> {
-        if let Inner::Forward { addr: None, .. } = self.routes {
-            // Already set.
+        if let Routes::Forward { addr: None, .. } = self.routes {
+            trace!("default forward already set");
             return Ok(());
         };
 
-        self.routes = Inner::Forward {
+        trace!("building default forward");
+        self.routes = Routes::Forward {
             service: self.make.make(self.target.clone()),
             addr: None,
         };
@@ -164,19 +188,20 @@ where
         T: WithAddr,
     {
         let routes = match self.routes {
-            Inner::Forward { ref addr, .. } => {
+            Routes::Forward { ref addr, .. } => {
                 if addrs.len() == 1 {
                     let new_addr = addrs.pop().unwrap().addr;
                     if addr.as_ref().map(|a| a == &new_addr).unwrap_or(false) {
-                        // Already set.
+                        trace!("forward already set to {}", new_addr);
                         return Ok(());
                     }
 
+                    trace!("building forward to {}", new_addr);
                     let service = {
                         let t = self.target.clone().with_addr(new_addr.clone());
                         self.make.make(t)
                     };
-                    Inner::Forward {
+                    Routes::Forward {
                         addr: Some(new_addr),
                         service,
                     }
@@ -191,30 +216,33 @@ where
                             (wa.addr, s)
                         })
                         .collect::<IndexMap<_, _>>();
-                    Inner::Split {
+                    Routes::Split {
                         distribution,
                         services,
                     }
                 }
             }
-            Inner::Split { ref services, .. } => {
+            Routes::Split { ref services, .. } => {
                 let distribution = WeightedIndex::new(addrs.iter().map(|w| w.weight))
                     .expect("invalid weight distribution");
                 let prior = services;
                 let mut services = IndexMap::with_capacity(addrs.len());
+                trace!("building split over {} services", addrs.len());
                 for w in addrs.into_iter() {
                     match prior.get(&w.addr) {
                         None => {
+                            trace!("building split to {}", w.addr);
                             let t = self.target.clone().with_addr(w.addr.clone());
                             let s = self.make.make(t);
                             services.insert(w.addr, s);
                         }
                         Some(s) => {
+                            trace!("reusing split to {}", w.addr);
                             services.insert(w.addr, (*s).clone());
                         }
                     }
                 }
-                Inner::Split {
+                Routes::Split {
                     distribution,
                     services,
                 }

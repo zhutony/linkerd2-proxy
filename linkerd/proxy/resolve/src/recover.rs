@@ -297,7 +297,7 @@ where
                     ref mut backoff,
                 } => {
                     let err = error.take().expect("illegal state");
-                    tracing::debug!(message = %err);
+                    tracing::debug!(%err, "recovering");
                     let new_backoff = self.recover.recover(err)?;
                     State::Backoff(backoff.take().or(Some(new_backoff)))
                 }

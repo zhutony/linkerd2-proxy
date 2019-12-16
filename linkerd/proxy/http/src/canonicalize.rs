@@ -114,9 +114,8 @@ where
     type Service = tower::util::Either<Service<M::Service>, M::Service>;
 
     fn make(&self, addr: Addr) -> Self::Service {
-        let inner = self.inner.make(addr.clone());
         match addr {
-            Addr::Socket(_) => tower::util::Either::B(inner),
+            Addr::Socket(_) => tower::util::Either::B(self.inner.make(addr)),
             Addr::Name(ref na) => {
                 let (tx, rx) = mpsc::channel(1);
                 let (_tx_stop, rx_stop) = oneshot::channel();
@@ -126,11 +125,10 @@ where
 
                 tower::util::Either::A(Service {
                     canonicalized: None,
-                    inner,
+                    inner: self.inner.make(addr),
                     rx,
                     _tx_stop,
                 })
-
             }
         }
     }

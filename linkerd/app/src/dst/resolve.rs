@@ -115,8 +115,8 @@ impl Recover<Error> for BackoffUnlessInvalidArgument {
                 tracing::debug!(message = "cannot recover", %status);
                 return Err(Unresolvable(()).into());
             }
-            Ok(status) => tracing::debug!(message = "recovering", %status),
-            Err(error) => tracing::debug!(message = "recovering", %error),
+            Ok(status) => tracing::trace!(message = "recovering", %status),
+            Err(error) => tracing::trace!(message = "recovering", %error),
         }
 
         Ok(self.0.stream())

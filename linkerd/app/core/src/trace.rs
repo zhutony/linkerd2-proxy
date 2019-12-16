@@ -263,6 +263,7 @@ pub mod layer {
             let span = self.get_span.get_span(&target);
             let _enter = span.enter();
 
+            trace!("make");
             SetSpan {
                 inner: self.make.make(target),
                 span: span.clone(),
@@ -301,15 +302,21 @@ pub mod layer {
         type Future = Instrumented<S::Future>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-            let _enter = self.span.enter();
-            trace!("poll_ready");
+            use futures::Async;
 
-            self.inner.poll_ready()
+            let _enter = self.span.enter();
+
+            match self.inner.poll_ready()? {
+                Async::Ready(()) => Ok(Async::Ready(())),
+                Async::NotReady => {
+                    trace!(ready = false, "poll_ready");
+                    Ok(Async::NotReady)
+                }
+            }
         }
 
         fn call(&mut self, req: Req) -> Self::Future {
             let _enter = self.span.enter();
-            trace!("call");
 
             self.inner.call(req).instrument(self.span.clone())
         }

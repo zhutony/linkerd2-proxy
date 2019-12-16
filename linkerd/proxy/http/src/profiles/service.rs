@@ -133,6 +133,11 @@ where
         }
 
         if let Some(update) = profile {
+            debug!(
+                dst.overrides = update.dst_overrides.len(),
+                routes = update.routes.len(),
+                "updating"
+            );
             if update.dst_overrides.is_empty() {
                 self.concrete_update
                     .set_forward()

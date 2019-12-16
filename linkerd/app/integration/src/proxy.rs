@@ -279,7 +279,6 @@ fn run(proxy: Proxy, mut env: TestEnv) -> Listening {
                         );
                         let mut running = Some((running_tx, addrs));
                         let on_shutdown = future::poll_fn(move || {
-                            debug!("polling shutdown");
                             if let Some((tx, addrs)) = running.take() {
                                 let _ = tx.send(addrs);
                             }
