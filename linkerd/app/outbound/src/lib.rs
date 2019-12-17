@@ -254,7 +254,6 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     make_dst_route_proxy.into_inner(),
                 ))
-                //.push(trace::layer(|dst: &DstAddr| info_span!("profiles")))
                 .makes::<DstAddr>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
@@ -287,10 +286,6 @@ impl<A: OrigDstAddr> Config<A> {
                     dns_resolver,
                     canonicalize_timeout,
                 ))
-                // This buffer ensures readiness to the addr router, since
-                // canonicalize exerts backpressure until a name is resolved (or
-                // a timeout is hit).
-                .push_buffer(100, DispatchDeadline::extract)
                 .makes::<Addr>();
 
             // Routes requests to an `Addr`:
