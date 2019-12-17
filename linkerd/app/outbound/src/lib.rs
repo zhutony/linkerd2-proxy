@@ -130,11 +130,11 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
+                .push_pending()
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
                 .push(http::normalize_uri::layer())
-                .push_pending()
                 .makes::<Endpoint>();
 
             // A per-`outbound::Endpoint` stack that:
@@ -200,8 +200,8 @@ impl<A: OrigDstAddr> Config<A> {
             // If the `l5d-require-id` header is present, then that identity is
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
+                // This buffer holds requests while an endpoint is connecting.
                 .push_pending()
-                // This buffer is for readiness and not cloning.
                 .push_buffer(100, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
@@ -211,11 +211,12 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
-            const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 100;
+            const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 10;
             let balancer_layer = svc::layers()
                 .push_spawn_ready()
                 .push(discover::Layer::new(
                     DISCOVER_UPDATE_BUFFER_CAPACITY,
+                    buffer.dispatch_timeout * 2,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
                 .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
@@ -234,14 +235,14 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<DstAddr>()
                 .push_pending()
                 // This buffer provides:
-                // - clonability to the profile router;
+                // - clonability to the profile layer;
                 // - readiness to the logical router;
                 // It is necessary, since the fallback router exerts
                 // backpressure untl the service is required.
                 .push_buffer(100, DispatchDeadline::extract)
                 .makes::<DstAddr>()
                 .push(trace::layer(
-                    |dst: &DstAddr| info_span!("concrete", dst.concrete = %dst.dst_concrete()),
+                    |dst: &DstAddr| info_span!("concrete", name = %dst.dst_concrete()),
                 ));
 
             // A per-`DstAddr` stack that does the following:
@@ -253,10 +254,10 @@ impl<A: OrigDstAddr> Config<A> {
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
                 .makes_clone::<DstAddr>()
-                .push(http::profiles::Layer::new(
-                    profiles_client,
-                    make_dst_route_proxy.into_inner(),
-                ))
+                .push(
+                    http::profiles::Layer::new(profiles_client, make_dst_route_proxy.into_inner())
+                        .with_split(),
+                )
                 .makes::<DstAddr>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
@@ -266,7 +267,7 @@ impl<A: OrigDstAddr> Config<A> {
             // canonicalize to the same DstAddr use the same dst-stack service.
             let dst_router = dst_stack
                 .push(trace::layer(
-                    |dst: &DstAddr| info_span!("logical", dst.logical = %dst.dst_logical()),
+                    |dst: &DstAddr| info_span!("logical", name = %dst.dst_logical()),
                 ))
                 // Readiness is provided by the distributor.
                 .push(router::Layer::new(

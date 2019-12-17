@@ -23,10 +23,10 @@ use tracing::debug;
 pub struct Layer<G, RMake> {
     get_routes: G,
     make_route: RMake,
+    traffic_split: TrafficSplit,
     /// This is saved into a field so that the same `Arc`s are used and
     /// cloned, instead of calling `Route::default()` every time.
     default_route: Route,
-    rng: SmallRng,
 }
 
 #[derive(Clone, Debug)]
@@ -35,7 +35,7 @@ pub struct MakeSvc<G, RMake, CMake> {
     get_routes: G,
     make_route: RMake,
     make_concrete: CMake,
-    rng: SmallRng,
+    traffic_split: TrafficSplit,
 }
 
 pub struct Service<T, P, RMake, CMake>
@@ -46,8 +46,20 @@ where
 {
     profiles: Option<P>,
     requests: Requests<T, RMake>,
-    concrete: concrete::Service<CMake::Service>,
-    concrete_update: concrete::Update<T, CMake>,
+    concrete: Concrete<T, CMake>,
+    concrete_update: Option<concrete::Update<T, CMake>>,
+}
+
+#[derive(Clone, Debug)]
+enum TrafficSplit {
+    Forward,
+    Split(SmallRng),
+}
+
+#[derive(Clone, Debug)]
+pub enum Concrete<T, M: Make<T>> {
+    Forward(M::Service),
+    Split(concrete::Service<M::Service>),
 }
 
 impl<G, RMake> Layer<G, RMake>
@@ -60,8 +72,13 @@ where
             get_routes,
             make_route,
             default_route: Route::default(),
-            rng: SmallRng::from_entropy(),
+            traffic_split: TrafficSplit::Forward,
         }
+    }
+
+    pub fn with_split(mut self) -> Self {
+        self.traffic_split = TrafficSplit::Split(SmallRng::from_entropy());
+        self
     }
 }
 
@@ -78,7 +95,7 @@ where
             get_routes: self.get_routes.clone(),
             make_route: self.make_route.clone(),
             default_route: self.default_route.clone(),
-            rng: self.rng.clone(),
+            traffic_split: self.traffic_split.clone(),
         }
     }
 }
@@ -102,9 +119,22 @@ where
             }
         };
 
-        let (concrete, concrete_update) =
-            concrete::forward(target.clone(), self.make_concrete.clone(), self.rng.clone());
-        let requests = Requests::new(target, self.make_route.clone(), self.default_route.clone());
+        let requests = Requests::new(
+            target.clone(),
+            self.make_route.clone(),
+            self.default_route.clone(),
+        );
+        let (concrete, concrete_update) = match self.traffic_split {
+            TrafficSplit::Forward => {
+                let service = self.make_concrete.make(target);
+                (Concrete::Forward(service), None)
+            }
+            TrafficSplit::Split(ref rng) => {
+                let (service, update) =
+                    concrete::forward(target, self.make_concrete.clone(), rng.clone());
+                (Concrete::Split(service), Some(update))
+            }
+        };
         Service {
             profiles,
             requests,
@@ -132,23 +162,23 @@ where
             profile = Some(update);
         }
 
-        if let Some(update) = profile {
-            debug!(
-                dst.overrides = update.dst_overrides.len(),
-                routes = update.routes.len(),
-                "updating"
-            );
-            if update.dst_overrides.is_empty() {
-                self.concrete_update
-                    .set_forward()
-                    .expect("both sides of the concrete updater must be held");
-            } else {
-                self.concrete_update
-                    .set_split(update.dst_overrides)
-                    .expect("both sides of the concrete updater must be held");
+        if let Some(profile) = profile {
+            if let Some(ref mut update) = self.concrete_update {
+                if profile.dst_overrides.is_empty() {
+                    update
+                        .set_forward()
+                        .expect("both sides of the concrete updater must be held");
+                } else {
+                    debug!(services = profile.dst_overrides.len(), "updating split");
+
+                    update
+                        .set_split(profile.dst_overrides)
+                        .expect("both sides of the concrete updater must be held");
+                }
             }
 
-            self.requests.set_routes(update.routes);
+            debug!(routes = profile.routes.len(), "updating routes");
+            self.requests.set_routes(profile.routes);
         }
     }
 }
@@ -159,7 +189,7 @@ where
     P: Stream<Item = Routes, Error = Never>,
     CMake: Make<T, Service = C>,
     RMake: Make<T::Output, Service = R>,
-    R: Proxy<http::Request<B>, concrete::Service<C>>,
+    R: Proxy<http::Request<B>, Concrete<T, CMake>>,
     R::Error: Into<Error>,
     C: tower::Service<R::Request> + Clone,
     C::Error: Into<Error>,
@@ -178,5 +208,31 @@ where
         self.requests
             .proxy(&mut self.concrete, req)
             .map_err(Into::into)
+    }
+}
+
+impl<T, M, C, Req> tower::Service<Req> for Concrete<T, M>
+where
+    T: WithRoute + WithAddr + Clone,
+    M: Make<T, Service = C>,
+    C: tower::Service<Req> + Clone,
+    C::Error: Into<Error>,
+{
+    type Response = C::Response;
+    type Error = Error;
+    type Future = future::MapErr<C::Future, fn(C::Error) -> Error>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        match self {
+            Concrete::Forward(ref mut svc) => svc.poll_ready().map_err(Into::into),
+            Concrete::Split(ref mut svc) => svc.poll_ready(),
+        }
+    }
+
+    fn call(&mut self, req: Req) -> Self::Future {
+        match self {
+            Concrete::Forward(ref mut svc) => svc.call(req).map_err(Into::into),
+            Concrete::Split(ref mut svc) => svc.call(req),
+        }
     }
 }
