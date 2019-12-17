@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use std::{error, fmt};
 use tokio_timer::{clock, Delay};
 use tower::buffer;
+use tracing::{debug, trace};
 use tracing_futures::Instrument;
 
 /// Determines the dispatch deadline for a request.
@@ -139,6 +140,7 @@ where
     }
 
     fn call(&mut self, target: T) -> Self::Future {
+        trace!("make");
         let inner = self.inner.call(target);
 
         Self::Future {
@@ -163,6 +165,7 @@ where
     type Service = Enqueue<M::Service, D, Req>;
 
     fn make(&self, target: T) -> Self::Service {
+        trace!("make");
         Enqueue::new(
             self.inner.make(target),
             self.deadline.clone(),
@@ -230,6 +233,7 @@ where
     }
 
     fn call(&mut self, req: Req) -> Self::Future {
+        trace!("enqueue");
         let timeout = self.deadline.deadline(&req).map(Delay::new);
         let holder = Arc::new(Mutex::new(Some(req)));
         let stealer = Arc::downgrade(&holder);
@@ -277,6 +281,7 @@ where
         if h.is_some() {
             if let Some(t) = self.timeout.as_mut() {
                 if t.poll().map_err(Error::from)?.is_ready() {
+                    debug!("aborting request");
                     drop(h.take());
                     return Err(Aborted.into());
                 }
@@ -302,14 +307,25 @@ where
     type Future = DequeueFuture<S::Future>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.0.poll_ready().map_err(Into::into)
+        if self.0.poll_ready().map_err(Into::into)?.is_ready() {
+            return Ok(Async::Ready(()));
+        }
+
+        trace!("service is not ready");
+        Ok(Async::NotReady)
     }
 
     fn call(&mut self, req: Stealer<Req>) -> Self::Future {
         req.upgrade()
             .and_then(|l| l.lock().ok()?.take())
-            .map(|req| DequeueFuture::Inner(self.0.call(req)))
-            .unwrap_or(DequeueFuture::Lost)
+            .map(|req| {
+                trace!("dequeue");
+                DequeueFuture::Inner(self.0.call(req))
+            })
+            .unwrap_or_else(|| {
+                trace!("lost");
+                DequeueFuture::Lost
+            })
     }
 }
 

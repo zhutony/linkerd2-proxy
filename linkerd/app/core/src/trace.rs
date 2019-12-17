@@ -187,76 +187,59 @@ impl<T> GetSpan<T> for tracing::Span {
     }
 }
 
+pub fn layer<G>(get_span: G) -> self::layer::Layer<G> {
+    self::layer::Layer::new(get_span)
+}
+
 pub mod layer {
     use super::GetSpan;
-    use futures::Poll;
+    use futures::{Async, Future, Poll};
+    use linkerd2_error::Error;
     use linkerd2_stack::{Make, Proxy};
     use tracing::{trace, Span};
     use tracing_futures::{Instrument, Instrumented};
 
-    pub struct Layer<T, G: GetSpan<T>> {
+    #[derive(Clone, Debug)]
+    pub struct Layer<G> {
         get_span: G,
-        _marker: std::marker::PhantomData<fn(T)>,
     }
 
-    pub struct MakeSpan<T, G: GetSpan<T>, M: Make<T>> {
+    #[derive(Clone, Debug)]
+    pub struct MakeSpan<G, M> {
         get_span: G,
         make: M,
-        _marker: std::marker::PhantomData<fn(T)>,
     }
 
+    #[derive(Clone, Debug)]
     pub struct SetSpan<S> {
         span: Span,
         inner: S,
     }
 
-    impl<T, G: GetSpan<T> + Clone> Layer<T, G> {
+    impl<G> Layer<G> {
         pub fn new(get_span: G) -> Self {
-            Self {
-                get_span,
-                _marker: std::marker::PhantomData,
-            }
+            Self { get_span }
         }
     }
 
-    impl<T> Default for Layer<T, Span> {
+    impl Default for Layer<Span> {
         fn default() -> Self {
             Self::new(Span::current())
         }
     }
 
-    impl<T, G: GetSpan<T> + Clone> Clone for Layer<T, G> {
-        fn clone(&self) -> Self {
-            Self {
-                get_span: self.get_span.clone(),
-                _marker: std::marker::PhantomData,
-            }
-        }
-    }
-
-    impl<T, G: GetSpan<T> + Clone, M: Make<T>> tower::layer::Layer<M> for Layer<T, G> {
-        type Service = MakeSpan<T, G, M>;
+    impl<G: Clone, M> tower::layer::Layer<M> for Layer<G> {
+        type Service = MakeSpan<G, M>;
 
         fn layer(&self, make: M) -> Self::Service {
             Self::Service {
                 make,
                 get_span: self.get_span.clone(),
-                _marker: std::marker::PhantomData,
             }
         }
     }
 
-    impl<T, G: GetSpan<T> + Clone, M: Make<T> + Clone> Clone for MakeSpan<T, G, M> {
-        fn clone(&self) -> Self {
-            Self {
-                make: self.make.clone(),
-                get_span: self.get_span.clone(),
-                _marker: std::marker::PhantomData,
-            }
-        }
-    }
-
-    impl<T, G: GetSpan<T>, M: Make<T>> Make<T> for MakeSpan<T, G, M> {
+    impl<T, G: GetSpan<T>, M: Make<T>> Make<T> for MakeSpan<G, M> {
         type Service = SetSpan<M::Service>;
 
         fn make(&self, target: T) -> Self::Service {
@@ -271,11 +254,57 @@ pub mod layer {
         }
     }
 
-    impl<S: Clone> Clone for SetSpan<S> {
-        fn clone(&self) -> Self {
-            Self {
-                inner: self.inner.clone(),
-                span: self.span.clone(),
+    impl<T, G, M> tower::Service<T> for MakeSpan<G, M>
+    where
+        T: std::fmt::Debug,
+        G: GetSpan<T>,
+        M: tower::Service<T>,
+        M::Error: Into<Error>,
+    {
+        type Response = SetSpan<M::Response>;
+        type Error = Error;
+        type Future = SetSpan<M::Future>;
+
+        fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+            trace!("make poll_ready");
+            self.make.poll_ready().map_err(Into::into)
+        }
+
+        fn call(&mut self, target: T) -> Self::Future {
+            let span = self.get_span.get_span(&target);
+            let _enter = span.enter();
+
+            trace!(?target, "make");
+            SetSpan {
+                inner: self.make.call(target),
+                span: span.clone(),
+            }
+        }
+    }
+
+    impl<F> Future for SetSpan<F>
+    where
+        F: Future,
+        F::Error: Into<Error>,
+    {
+        type Item = SetSpan<F::Item>;
+        type Error = Error;
+
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+            let _enter = self.span.enter();
+
+            trace!("poll make future");
+            match self.inner.poll() {
+                Err(e) => {
+                    let error = e.into();
+                    trace!(%error, "make failed");
+                    Err(error)
+                }
+                Ok(Async::NotReady) => Ok(Async::NotReady),
+                Ok(Async::Ready(inner)) => Ok(Async::Ready(SetSpan {
+                    inner,
+                    span: self.span.clone(),
+                })),
             }
         }
     }
@@ -302,8 +331,6 @@ pub mod layer {
         type Future = Instrumented<S::Future>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-            use futures::Async;
-
             let _enter = self.span.enter();
 
             match self.inner.poll_ready()? {
@@ -321,10 +348,4 @@ pub mod layer {
             self.inner.call(req).instrument(self.span.clone())
         }
     }
-}
-
-pub use self::layer::Layer;
-
-pub fn layer<T, G: GetSpan<T> + Clone>(get_span: G) -> Layer<T, G> {
-    Layer::new(get_span)
 }

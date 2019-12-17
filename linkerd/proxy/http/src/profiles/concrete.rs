@@ -223,28 +223,44 @@ where
                 }
             }
             Routes::Split { ref services, .. } => {
-                let distribution = WeightedIndex::new(addrs.iter().map(|w| w.weight))
-                    .expect("invalid weight distribution");
-                let prior = services;
-                let mut services = IndexMap::with_capacity(addrs.len());
-                trace!("building split over {} services", addrs.len());
-                for w in addrs.into_iter() {
-                    match prior.get(&w.addr) {
+                if addrs.len() == 1 {
+                    let new_addr = addrs.pop().unwrap().addr;
+                    let service = match services.get(&new_addr) {
+                        Some(service) => service.clone(),
                         None => {
-                            trace!("building split to {}", w.addr);
-                            let t = self.target.clone().with_addr(w.addr.clone());
-                            let s = self.make.make(t);
-                            services.insert(w.addr, s);
+                            trace!("building forward to {}", new_addr);
+                            let t = self.target.clone().with_addr(new_addr.clone());
+                            self.make.make(t)
                         }
-                        Some(s) => {
-                            trace!("reusing split to {}", w.addr);
-                            services.insert(w.addr, (*s).clone());
+                    };
+                    Routes::Forward {
+                        addr: Some(new_addr),
+                        service,
+                    }
+                } else {
+                    let distribution = WeightedIndex::new(addrs.iter().map(|w| w.weight))
+                        .expect("invalid weight distribution");
+                    let prior = services;
+                    let mut services = IndexMap::with_capacity(addrs.len());
+                    trace!("building split over {} services", addrs.len());
+                    for w in addrs.into_iter() {
+                        match prior.get(&w.addr) {
+                            None => {
+                                trace!("building split to {}", w.addr);
+                                let t = self.target.clone().with_addr(w.addr.clone());
+                                let s = self.make.make(t);
+                                services.insert(w.addr, s);
+                            }
+                            Some(s) => {
+                                trace!("reusing split to {}", w.addr);
+                                services.insert(w.addr, (*s).clone());
+                            }
                         }
                     }
-                }
-                Routes::Split {
-                    distribution,
-                    services,
+                    Routes::Split {
+                        distribution,
+                        services,
+                    }
                 }
             }
         };

@@ -207,6 +207,7 @@ impl<A: OrigDstAddr> Config<A> {
                     router::Config::new(router_capacity, router_max_idle_age),
                     Endpoint::from_request,
                 ));
+            //.push(trace::layer(|_: &DstAddr| info_span!("fallback")));
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
@@ -217,7 +218,8 @@ impl<A: OrigDstAddr> Config<A> {
                     DISCOVER_UPDATE_BUFFER_CAPACITY,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
-                .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY));
+                .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
+                .push(trace::layer(|_: &DstAddr| info_span!("balance")));
 
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
@@ -228,6 +230,7 @@ impl<A: OrigDstAddr> Config<A> {
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
+                //.push(trace::layer(|_: &DstAddr| info_span!("discover")))
                 .serves::<DstAddr>()
                 .push_pending()
                 // This buffer provides:

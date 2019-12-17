@@ -168,6 +168,7 @@ impl app::core::transport::OrigDstAddr for MockOriginalDst {
 }
 
 fn run(proxy: Proxy, mut env: TestEnv) -> Listening {
+    let _ = trace_init();
     let controller = proxy.controller.unwrap_or_else(|| controller::new().run());
     let inbound = proxy.inbound;
     let outbound = proxy.outbound;

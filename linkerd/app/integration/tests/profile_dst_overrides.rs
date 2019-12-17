@@ -231,13 +231,17 @@ fn set_all_dst_override_weights_to_zero() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    let ctrl = ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    let apex_tx0 = ctrl.destination_tx(&apex_svc.authority());
+    apex_tx0.send_addr(apex_svc.svc.addr);
     let leaf_a = "leaf-a";
     let leaf_a_svc = Service::new(leaf_a);
-    let ctrl = ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
+    let leaf_a_tx = ctrl.destination_tx(&leaf_a_svc.authority());
+    leaf_a_tx.send_addr(leaf_a_svc.svc.addr);
     let leaf_b = "leaf-b";
     let leaf_b_svc = Service::new(leaf_b);
-    let ctrl = ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
+    let leaf_b_tx = ctrl.destination_tx(&leaf_b_svc.authority());
+    leaf_b_tx.send_addr(leaf_b_svc.svc.addr);
+    let apex_tx1 = ctrl.destination_tx(&leaf_b_svc.authority());
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(profile(
@@ -274,6 +278,7 @@ fn set_all_dst_override_weights_to_zero() {
             controller::dst_override(leaf_b_svc.authority(), 0),
         ],
     ));
+    apex_tx1.send_addr(apex_svc.svc.addr);
     wait_for_profile_stage(&client, &metrics, "zero-weights");
 
     // 3. Send `n` requests to apex service with all weights set to zero
@@ -290,14 +295,15 @@ fn set_all_dst_override_weights_to_zero() {
 #[test]
 fn remove_a_dst_override() {
     let _ = trace_init();
-    let ctrl = controller::new_unordered();
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    let ctrl = ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
     let leaf = "leaf";
     let leaf_svc = Service::new(leaf);
-    let ctrl = ctrl.destination_and_close(&leaf_svc.authority(), leaf_svc.svc.addr);
+    let ctrl = controller::new_unordered();
+    let apex_tx0 = ctrl.destination_tx(&apex_svc.authority());
+    let leaf_tx = ctrl.destination_tx(&leaf_svc.authority());
+    let apex_tx1 = ctrl.destination_tx(&apex_svc.authority());
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(profile(
@@ -313,6 +319,8 @@ fn remove_a_dst_override() {
 
     let n = 100;
 
+    apex_tx0.send_addr(apex_svc.svc.addr);
+    leaf_tx.send_addr(leaf_svc.svc.addr);
     // 1. Send `n` requests to apex service
     wait_for_profile_stage(&client, &metrics, "overrides");
     for _ in 0..n {
@@ -323,6 +331,7 @@ fn remove_a_dst_override() {
 
     // 2. Remove dst override
     profile_tx.send(profile("removed", Vec::new()));
+    apex_tx1.send_addr(apex_svc.svc.addr);
     wait_for_profile_stage(&client, &metrics, "removed");
 
     // 3. Send `n` requests to apex service with overrides removed

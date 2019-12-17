@@ -154,6 +154,7 @@ impl Controller {
     }
 
     pub fn run(self) -> Listening {
+        let _ = trace_init();
         run(
             pb::server::DestinationServer::new(self),
             "support destination service",
@@ -240,40 +241,45 @@ impl pb::server::Destination for Controller {
         if let Ok(mut calls) = self.expect_dst_calls.lock() {
             if self.unordered {
                 let mut calls_next: VecDeque<Dst> = VecDeque::new();
-                let mut ret = future::err(grpc_unexpected_request());
-                while let Some(call) = calls.pop_front() {
-                    match call {
-                        Dst::Call(dst, updates) => {
-                            if &dst == req.get_ref() {
-                                ret = future::result(updates.map(grpc::Response::new));
-                            } else {
-                                calls_next.push_back(Dst::Call(dst, updates));
-                            }
-                        }
-                        Dst::Done => {}
-                    }
+                if calls.is_empty() {
+                    eprintln!("exhausted request={:?}", req.get_ref());
                 }
-                *calls.deref_mut() = calls_next;
-                return ret;
-            } else {
-                match calls.pop_front() {
-                    Some(Dst::Call(dst, updates)) => {
+                while let Some(call) = calls.pop_front() {
+                    if let Dst::Call(dst, updates) = call {
                         if &dst == req.get_ref() {
+                            println!("found request={:?}", dst);
+                            calls_next.extend(calls.drain(..));
+                            *calls.deref_mut() = calls_next;
                             return future::result(updates.map(grpc::Response::new));
                         }
 
-                        let msg = format!(
-                            "expected get call for {:?} but got get call for {:?}",
-                            dst, req
-                        );
-                        calls.push_front(Dst::Call(dst, updates));
-                        return future::err(grpc::Status::new(grpc::Code::Unavailable, msg));
+                        calls_next.push_back(Dst::Call(dst, updates));
                     }
-                    Some(Dst::Done) => {
-                        panic!("unit test controller expects no more Destination.Get calls")
-                    }
-                    _ => {}
                 }
+
+                println!("remaining={:?}", calls_next.len());
+                *calls.deref_mut() = calls_next;
+                return future::err(grpc_unexpected_request());
+            }
+
+            match calls.pop_front() {
+                Some(Dst::Call(dst, updates)) => {
+                    if &dst == req.get_ref() {
+                        tracing::error!("found request={:?}", dst);
+                        return future::result(updates.map(grpc::Response::new));
+                    }
+
+                    let msg = format!(
+                        "expected get call for {:?} but got get call for {:?}",
+                        dst, req
+                    );
+                    calls.push_front(Dst::Call(dst, updates));
+                    return future::err(grpc::Status::new(grpc::Code::Unavailable, msg));
+                }
+                Some(Dst::Done) => {
+                    panic!("unit test controller expects no more Destination.Get calls")
+                }
+                _ => {}
             }
         }
 
