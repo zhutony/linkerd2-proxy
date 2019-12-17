@@ -242,12 +242,12 @@ impl pb::server::Destination for Controller {
             if self.unordered {
                 let mut calls_next: VecDeque<Dst> = VecDeque::new();
                 if calls.is_empty() {
-                    eprintln!("exhausted request={:?}", req.get_ref());
+                    tracing::warn!("exhausted request={:?}", req.get_ref());
                 }
                 while let Some(call) = calls.pop_front() {
                     if let Dst::Call(dst, updates) = call {
                         if &dst == req.get_ref() {
-                            println!("found request={:?}", dst);
+                            tracing::info!("found request={:?}", dst);
                             calls_next.extend(calls.drain(..));
                             *calls.deref_mut() = calls_next;
                             return future::result(updates.map(grpc::Response::new));
@@ -257,7 +257,7 @@ impl pb::server::Destination for Controller {
                     }
                 }
 
-                println!("remaining={:?}", calls_next.len());
+                tracing::warn!("missed request={:?} remaining={:?}", req, calls_next.len());
                 *calls.deref_mut() = calls_next;
                 return future::err(grpc_unexpected_request());
             }

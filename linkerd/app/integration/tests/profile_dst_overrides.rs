@@ -241,7 +241,7 @@ fn set_all_dst_override_weights_to_zero() {
     let leaf_b_svc = Service::new(leaf_b);
     let leaf_b_tx = ctrl.destination_tx(&leaf_b_svc.authority());
     leaf_b_tx.send_addr(leaf_b_svc.svc.addr);
-    let apex_tx1 = ctrl.destination_tx(&leaf_b_svc.authority());
+    let apex_tx1 = ctrl.destination_tx(&apex_svc.authority());
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(profile(
