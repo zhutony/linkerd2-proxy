@@ -236,7 +236,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 // This buffer provides:
                 // - clonability to the profile layer;
-                // - readiness to the logical router;
                 // It is necessary, since the fallback router exerts
                 // backpressure untl the service is required.
                 .push_buffer(100, DispatchDeadline::extract)

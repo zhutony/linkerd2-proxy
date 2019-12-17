@@ -8,12 +8,11 @@ mod purge;
 use self::cache::Cache;
 pub use self::layer::{Config, Layer};
 pub use self::purge::Purge;
-use futures::{Async, Future, Poll};
+use futures::{try_ready, Async, Future, Poll};
 use linkerd2_stack::Make;
 use std::hash::Hash;
 use std::time::Duration;
 use tokio::sync::lock::Lock;
-pub use tower_load_shed::LoadShed;
 use tracing::debug;
 
 /// Routes requests based on a configurable `Key`.
@@ -59,7 +58,7 @@ where
 {
     recognize: Rec,
     make: Mk,
-    cache: Lock<Cache<Rec::Target, LoadShed<Mk::Service>>>,
+    cache: Lock<Cache<Rec::Target, Mk::Service>>,
 }
 
 enum State<Req, Rec, Mk>
@@ -73,9 +72,9 @@ where
         request: Option<Req>,
         target: Rec::Target,
         make: Mk,
-        cache: Lock<Cache<Rec::Target, LoadShed<Mk::Service>>>,
+        cache: Lock<Cache<Rec::Target, Mk::Service>>,
     },
-    Respond(<LoadShed<Mk::Service> as tower::Service<Req>>::Future),
+    Respond(<Mk::Service as tower::Service<Req>>::Future),
     Error(Option<error::Error>),
 }
 
@@ -107,7 +106,7 @@ where
         make: Mk,
         capacity: usize,
         max_idle_age: Duration,
-    ) -> (Self, Purge<Rec::Target, LoadShed<Mk::Service>>) {
+    ) -> (Self, Purge<Rec::Target, Mk::Service>) {
         let cache = Lock::new(Cache::new(capacity, max_idle_age));
         let (purge, _hangup) = Purge::new(cache.clone());
         let router = Self {
@@ -190,7 +189,7 @@ where
         request: Req,
         target: Rec::Target,
         make: Mk,
-        cache: Lock<Cache<Rec::Target, LoadShed<Mk::Service>>>,
+        cache: Lock<Cache<Rec::Target, Mk::Service>>,
     ) -> Self {
         ResponseFuture {
             state: State::Make {
@@ -221,7 +220,7 @@ where
     Mk::Service: tower::Service<Req>,
     <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
 {
-    type Item = <LoadShed<Mk::Service> as tower::Service<Req>>::Response;
+    type Item = <Mk::Service as tower::Service<Req>>::Response;
     type Error = error::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -246,12 +245,7 @@ where
                     // If the target is already cached, route the request to
                     // the service; otherwise, try to insert it
                     if let Some(service) = cache.access(&target) {
-                        let ready = service.poll_ready().map_err(|e| {
-                            let e: error::Error = e.into();
-                            e
-                        })?;
-                        assert!(ready.is_ready(), "routes shed load");
-
+                        try_ready!(service.poll_ready().map_err(Into::into));
                         State::Respond(service.call(request))
                     } else {
                         // Ensure that there is capacity for a new slot
@@ -262,13 +256,9 @@ where
 
                         // Make a new service for the target
                         debug!("inserting new target into cache");
-                        let mut service = LoadShed::new(make.make(target.clone()));
+                        let mut service = make.make(target.clone());
 
-                        let ready = service.poll_ready().map_err(|e| {
-                            let e: error::Error = e.into();
-                            e
-                        })?;
-                        assert!(ready.is_ready(), "routes shed load");
+                        try_ready!(service.poll_ready().map_err(Into::into));
                         let fut = service.call(request);
 
                         cache.insert(target.clone(), service);
