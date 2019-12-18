@@ -11,8 +11,8 @@ use linkerd2_app_core::{
     config::{ProxyConfig, ServerConfig},
     dns, drain,
     dst::{self, DstAddr},
-    errors, http_request_authority_addr, http_request_host_addr,
-    http_request_l5d_override_dst_addr, http_request_orig_dst_addr,
+    errors, /* http_request_authority_addr, http_request_host_addr,
+            http_request_l5d_override_dst_addr, http_request_orig_dst_addr, */
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower_grpc::{self as grpc, generic::client::GrpcService};
-use tracing::{debug, info_span};
+use tracing::info_span;
 
 #[allow(dead_code)] // TODO #2597
 mod add_remote_ip_on_rsp;
@@ -154,7 +154,6 @@ impl<A: OrigDstAddr> Config<A> {
                 // disabled due to information leagkage
                 //.push(add_remote_ip_on_rsp::layer())
                 //.push(add_server_id_on_rsp::layer())
-                .serves::<Endpoint>()
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -177,7 +176,7 @@ impl<A: OrigDstAddr> Config<A> {
             //    retries.
             // 3. Retries are optionally enabled depending on if the route
             //    is retryable.
-            let make_dst_route_proxy = svc::proxies()
+            let make_dst_route_proxy = svc::stack(())
                 .push(http::insert::target::layer())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route_retry.clone(),
@@ -200,10 +199,7 @@ impl<A: OrigDstAddr> Config<A> {
             let orig_dst_router_layer = svc::layers()
                 // This buffer holds requests while an endpoint is connecting.
                 .push_pending()
-                .push(router::Layer::new(
-                    router::Config::new(router_capacity, router_max_idle_age),
-                    Endpoint::from_request,
-                ));
+                .push(router::Layer::new(router_capacity, router_max_idle_age));
             //.push(trace::layer(|_: &DstAddr| info_span!("fallback")));
 
             // Resolves the target via the control plane and balances requests
@@ -230,13 +226,6 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 //.push(trace::layer(|_: &DstAddr| info_span!("discover")))
                 .serves::<DstAddr>()
-                .push_pending()
-                // This buffer provides:
-                // - clonability to the profile layer;
-                // It is necessary, since the fallback router exerts
-                // backpressure untl the service is required.
-                .push_buffer(100, DispatchDeadline::extract)
-                .makes::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", name = %dst.dst_concrete()),
                 ));
@@ -249,6 +238,12 @@ impl<A: OrigDstAddr> Config<A> {
             // 3. Creates a load balancer , configured by resolving the
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
+                .push_pending()
+                // This buffer provides:
+                // - clonability to the profile layer;
+                // It is necessary, since the fallback router exerts
+                // backpressure untl the service is required.
+                .push_buffer(100, DispatchDeadline::extract)
                 .makes_clone::<DstAddr>()
                 .push(http::profiles::Layer::with_split(
                     profiles_client,
@@ -265,10 +260,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", name = %dst.dst_logical()),
                 ))
-                .push(router::Layer::new(
-                    router::Config::new(router_capacity, router_max_idle_age),
-                    |dst: &DstAddr| dst.clone(),
-                ))
+                .push(router::Layer::new(router_capacity, router_max_idle_age))
                 .serves::<DstAddr>()
                 .into_inner()
                 .spawn();
@@ -306,18 +298,19 @@ impl<A: OrigDstAddr> Config<A> {
                 // This router does not need a buffer, since it wraps the
                 // `dst_router` which is always ready.
                 .push(router::Layer::new(
-                    router::Config::new(router_capacity, router_max_idle_age),
-                    |req: &http::Request<_>| {
-                        http_request_l5d_override_dst_addr(req)
-                            .map(|override_addr| {
-                                debug!("using dst-override");
-                                override_addr
-                            })
-                            .or_else(|_| http_request_authority_addr(req))
-                            .or_else(|_| http_request_host_addr(req))
-                            .or_else(|_| http_request_orig_dst_addr(req))
-                            .ok()
-                    },
+                    router_capacity,
+                    router_max_idle_age,
+                    //     |req: &http::Request<_>| {
+                    //         http_request_l5d_override_dst_addr(req)
+                    //             .map(|override_addr| {
+                    //                 debug!("using dst-override");
+                    //                 override_addr
+                    //             })
+                    //             .or_else(|_| http_request_authority_addr(req))
+                    //             .or_else(|_| http_request_host_addr(req))
+                    //             .or_else(|_| http_request_orig_dst_addr(req))
+                    //             .ok()
+                    //     },
                 ))
                 .into_inner()
                 .spawn();

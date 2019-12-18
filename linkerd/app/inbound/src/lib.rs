@@ -140,7 +140,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<Endpoint>()
                 .push(router::Layer::new(
-                    router::Config::new(router_capacity, router_max_idle_age),
+                    router_capacity,
+                    router_max_idle_age,
                     RecognizeEndpoint::default(),
                 ))
                 .into_inner()
@@ -198,7 +199,8 @@ impl<A: OrigDstAddr> Config<A> {
             let dst_router = dst_stack
                 .makes::<DstAddr>()
                 .push(router::Layer::new(
-                    router::Config::new(router_capacity, router_max_idle_age),
+                    router_capacity,
+                    router_max_idle_age,
                     |req: &http::Request<_>| {
                         let dst = req
                             .headers()

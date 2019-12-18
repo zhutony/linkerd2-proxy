@@ -1,5 +1,5 @@
 [package]
-name = "linkerd2-router"
+name = "linkerd2-cache"
 version = "0.1.0"
 authors = ["Linkerd Developers <cncf-linkerd-dev@lists.cncf.io>"]
 edition = "2018"

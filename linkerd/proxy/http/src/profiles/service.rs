@@ -207,8 +207,7 @@ where
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.poll_update();
-        try_ready!(self.concrete.poll_ready());
-        Ok(().into())
+        self.concrete.poll_ready()
     }
 
     fn call(&mut self, req: http::Request<B>) -> Self::Future {
