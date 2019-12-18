@@ -6,133 +6,86 @@ pub mod layer;
 mod purge;
 
 use self::cache::Cache;
-pub use self::layer::{Config, Layer};
+pub use self::layer::Layer;
 pub use self::purge::Purge;
-use futures::{try_ready, Async, Future, Poll};
+use futures::{Async, Future, Poll};
 use linkerd2_stack::Make;
 use std::hash::Hash;
 use std::time::Duration;
 use tokio::sync::lock::Lock;
 use tracing::debug;
 
-/// Routes requests based on a configurable `Key`.
-pub struct Router<Req, Rec, Mk>
+#[derive(Clone)]
+pub struct Router<T, M>
 where
-    Rec: Recognize<Req>,
-    Mk: Make<Rec::Target>,
-    Mk::Service: tower::Service<Req>,
+    T: Clone + Eq + Hash,
+    M: Make<T>,
 {
-    inner: Inner<Req, Rec, Mk>,
+    inner: Inner<T, M>,
     _hangup: purge::Handle,
 }
 
-/// Provides a strategy for routing a Request to a Service.
-///
-/// Implementors must provide a `Key` type that identifies each unique route. The
-/// `recognize()` method is used to determine the target for a given request. This target is
-/// used to look up a route in a cache (i.e. in `Router`), or can be passed to
-/// `bind_service` to instantiate the identified route.
-pub trait Recognize<Request> {
-    /// Identifies a Route.
-    type Target: Clone + Eq + Hash;
-
-    /// Determines the target for a route to handle the given request.
-    fn recognize(&self, request: &Request) -> Option<Self::Target>;
-}
-
-pub struct ResponseFuture<Req, Rec, Mk>
-where
-    Rec: Recognize<Req>,
-    Mk: Make<Rec::Target>,
-    Mk::Service: tower::Service<Req>,
-    <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
-{
-    state: State<Req, Rec, Mk>,
-}
-
-struct Inner<Req, Rec, Mk>
-where
-    Rec: Recognize<Req>,
-    Mk: Make<Rec::Target>,
-    Mk::Service: tower::Service<Req>,
-{
-    recognize: Rec,
-    make: Mk,
-    cache: Lock<Cache<Rec::Target, Mk::Service>>,
-}
-
-enum State<Req, Rec, Mk>
-where
-    Rec: Recognize<Req>,
-    Mk: Make<Rec::Target>,
-    Mk::Service: tower::Service<Req>,
-    <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
-{
-    Make {
-        request: Option<Req>,
-        target: Rec::Target,
-        make: Mk,
-        cache: Lock<Cache<Rec::Target, Mk::Service>>,
-    },
-    Respond(<Mk::Service as tower::Service<Req>>::Future),
-    Error(Option<error::Error>),
-}
-
-// ===== impl Recognize =====
-
-impl<R, T, F> Recognize<R> for F
+pub struct ResponseFuture<T, M>
 where
     T: Clone + Eq + Hash,
-    F: Fn(&R) -> Option<T>,
+    M: Make<T>,
 {
-    type Target = T;
+    target: T,
+    make: M,
+    cache: Lock<Cache<T, M::Service>>,
+}
 
-    fn recognize(&self, request: &R) -> Option<T> {
-        (self)(request)
+struct Inner<T, M>
+where
+    T: Clone + Eq + Hash,
+    M: Make<T>,
+{
+    make: M,
+    cache: Lock<Cache<T, M::Service>>,
+}
+
+impl<T, M> Clone for Inner<T, M>
+where
+    T: Clone + Eq + Hash,
+    M: Make<T> + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            make: self.make.clone(),
+            cache: self.cache.clone(),
+        }
     }
 }
 
 // ===== impl Router =====
 
-impl<Req, Rec, Mk> Router<Req, Rec, Mk>
+impl<T, M> Router<T, M>
 where
-    Rec: Recognize<Req>,
-    Rec::Target: Clone,
-    Mk: Make<Rec::Target> + Clone,
-    Mk::Service: tower::Service<Req>,
+    T: Clone + Eq + Hash,
+    M: Make<T> + Clone,
+    M::Service: Clone,
 {
-    pub fn new(
-        recognize: Rec,
-        make: Mk,
-        capacity: usize,
-        max_idle_age: Duration,
-    ) -> (Self, Purge<Rec::Target, Mk::Service>) {
+    pub fn new(make: M, capacity: usize, max_idle_age: Duration) -> (Self, Purge<T, M::Service>) {
         let cache = Lock::new(Cache::new(capacity, max_idle_age));
         let (purge, _hangup) = Purge::new(cache.clone());
         let router = Self {
             _hangup,
-            inner: Inner {
-                recognize,
-                make,
-                cache,
-            },
+            inner: Inner { make, cache },
         };
 
         (router, purge)
     }
 }
 
-impl<Req, Rec, Mk> tower::Service<Req> for Router<Req, Rec, Mk>
+impl<T, M> tower::Service<T> for Router<T, M>
 where
-    Rec: Recognize<Req>,
-    Rec::Target: Clone,
-    Mk: Make<Rec::Target> + Clone,
-    Mk::Service: tower::Service<Req>,
-    <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
+    T: Clone + Eq + Hash,
+    M: Make<T> + Clone,
+    M::Service: Clone,
 {
-    type Response = <Mk::Service as tower::Service<Req>>::Response;
-    type Error = error::Error;
-    type Future = ResponseFuture<Req, Rec, Mk>;
+    type Response = M::Service;
+    type Error = error::NoCapacity;
+    type Future = ResponseFuture<T, M>;
 
     /// Always ready to serve.
     ///
@@ -146,147 +99,61 @@ where
     /// Routes the request through an underlying service.
     ///
     /// The response fails when the request cannot be routed.
-    fn call(&mut self, request: Req) -> Self::Future {
-        let target = match self.inner.recognize.recognize(&request) {
-            Some(target) => target,
-            None => return ResponseFuture::not_recognized(),
-        };
-
-        ResponseFuture::new(
-            request,
-            target,
-            self.inner.make.clone(),
-            self.inner.cache.clone(),
-        )
-    }
-}
-
-impl<Req, Rec, Mk> Clone for Router<Req, Rec, Mk>
-where
-    Rec: Recognize<Req> + Clone,
-    Mk: Make<Rec::Target> + Clone,
-    Mk::Service: tower::Service<Req>,
-{
-    fn clone(&self) -> Self {
-        Router {
-            inner: self.inner.clone(),
-            _hangup: self._hangup.clone(),
-        }
+    fn call(&mut self, target: T) -> Self::Future {
+        ResponseFuture::new(target, self.inner.make.clone(), self.inner.cache.clone())
     }
 }
 
 // ===== impl ResponseFuture =====
 
-impl<Req, Rec, Mk> ResponseFuture<Req, Rec, Mk>
+impl<T, M> ResponseFuture<T, M>
 where
-    Rec: Recognize<Req>,
-    Rec::Target: Clone,
-    Mk: Make<Rec::Target>,
-    Mk::Service: tower::Service<Req>,
-    <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
+    T: Clone + Eq + Hash,
+    M: Make<T>,
+    M::Service: Clone,
 {
-    fn new(
-        request: Req,
-        target: Rec::Target,
-        make: Mk,
-        cache: Lock<Cache<Rec::Target, Mk::Service>>,
-    ) -> Self {
+    fn new(target: T, make: M, cache: Lock<Cache<T, M::Service>>) -> Self {
         ResponseFuture {
-            state: State::Make {
-                request: Some(request),
-                target,
-                make,
-                cache,
-            },
+            target,
+            make,
+            cache,
         }
-    }
-
-    fn error(err: error::Error) -> Self {
-        ResponseFuture {
-            state: State::Error(Some(err)),
-        }
-    }
-
-    fn not_recognized() -> Self {
-        Self::error(error::NotRecognized.into())
     }
 }
 
-impl<Req, Rec, Mk> Future for ResponseFuture<Req, Rec, Mk>
+impl<T, M> Future for ResponseFuture<T, M>
 where
-    Rec: Recognize<Req>,
-    Rec::Target: Clone,
-    Mk: Make<Rec::Target> + Clone,
-    Mk::Service: tower::Service<Req>,
-    <Mk::Service as tower::Service<Req>>::Error: Into<error::Error>,
+    T: Clone + Eq + Hash,
+    M: Make<T> + Clone,
+    M::Service: Clone,
 {
-    type Item = <Mk::Service as tower::Service<Req>>::Response;
-    type Error = error::Error;
+    type Item = M::Service;
+    type Error = error::NoCapacity;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        use tower::Service;
+        // Aquire the lock for the router cache
+        let mut cache = match self.cache.poll_lock() {
+            Async::NotReady => return Ok(Async::NotReady),
+            Async::Ready(aquired) => aquired,
+        };
 
-        loop {
-            self.state = match self.state {
-                State::Make {
-                    ref mut request,
-                    ref target,
-                    ref make,
-                    ref mut cache,
-                } => {
-                    // Aquire the lock for the router cache
-                    let mut cache = match cache.poll_lock() {
-                        Async::NotReady => return Ok(Async::NotReady),
-                        Async::Ready(aquired) => aquired,
-                    };
-
-                    let request = request.take().expect("polled after ready");
-
-                    // If the target is already cached, route the request to
-                    // the service; otherwise, try to insert it
-                    if let Some(service) = cache.access(&target) {
-                        try_ready!(service.poll_ready().map_err(Into::into));
-                        State::Respond(service.call(request))
-                    } else {
-                        // Ensure that there is capacity for a new slot
-                        if !cache.can_insert() {
-                            debug!("not enough capacity to insert target into cache");
-                            return Err(error::NoCapacity(cache.capacity()).into());
-                        }
-
-                        // Make a new service for the target
-                        debug!("inserting new target into cache");
-                        let mut service = make.make(target.clone());
-
-                        try_ready!(service.poll_ready().map_err(Into::into));
-                        let fut = service.call(request);
-
-                        cache.insert(target.clone(), service);
-
-                        State::Respond(fut)
-                    }
-                }
-                State::Respond(ref mut fut) => return fut.poll().map_err(Into::into),
-                State::Error(ref mut err) => return Err(err.take().expect("polled after ready")),
-            }
+        // If the target is already cached, route the request to
+        // the service; otherwise, try to insert it
+        if let Some(service) = cache.access(&self.target) {
+            return Ok(service.clone().into());
         }
-    }
-}
 
-// ===== impl Inner =====
-
-impl<Req, Rec, Mk> Clone for Inner<Req, Rec, Mk>
-where
-    Rec: Recognize<Req> + Clone,
-    Mk: Make<Rec::Target> + Clone,
-    Mk::Service: tower::Service<Req>,
-{
-    fn clone(&self) -> Self {
-        Inner {
-            recognize: self.recognize.clone(),
-            make: self.make.clone(),
-            cache: self.cache.clone(),
+        // Ensure that there is capacity for a new slot
+        if !cache.can_insert() {
+            debug!("not enough capacity to insert target into cache");
+            return Err(error::NoCapacity(cache.capacity()).into());
         }
+
+        // Make a new service for the target
+        debug!("inserting new target into cache");
+        let service = self.make.make(self.target.clone());
+        cache.insert(self.target.clone(), service.clone());
+        Ok(service.into())
     }
 }
 
@@ -423,11 +290,11 @@ mod tests {
     use std::usize;
     use tower::Service;
 
-    impl<Mk> Router<Request, Recognize, Mk>
+    impl<Mk> Router<Request, Recognize, M>
     where
-        Mk: Make<usize> + Clone,
-        Mk::Service: tower::Service<Request, Response = usize> + Clone,
-        <Mk::Service as tower::Service<Request>>::Error: Into<error::Error>,
+        M: Make<usize> + Clone,
+        M::Service: tower::Service<Request, Response = usize> + Clone,
+        <M::Service as tower::Service<Request>>::Error: Into<error::Error>,
     {
         fn call_ok(&mut self, request: impl Into<Request>) -> usize {
             let request = request.into();

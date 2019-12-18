@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod concrete;
-pub mod recognize;
 mod requests;
 pub mod service;
 

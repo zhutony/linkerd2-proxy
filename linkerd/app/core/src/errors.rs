@@ -139,9 +139,6 @@ fn map_err_to_5xx(e: Error) -> StatusCode {
     } else if let Some(_) = e.downcast_ref::<buffer::Aborted>() {
         warn!("request aborted because it reached the configured dispatch deadline");
         http::StatusCode::SERVICE_UNAVAILABLE
-    } else if let Some(_) = e.downcast_ref::<router::NotRecognized>() {
-        error!("could not recognize request");
-        http::StatusCode::BAD_GATEWAY
     } else if let Some(err) = e.downcast_ref::<StatusError>() {
         error!(%err.status, %err.message);
         err.status

@@ -200,7 +200,6 @@ impl<A: OrigDstAddr> Config<A> {
             let orig_dst_router_layer = svc::layers()
                 // This buffer holds requests while an endpoint is connecting.
                 .push_pending()
-                .push_buffer(100, DispatchDeadline::extract)
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     Endpoint::from_request,
@@ -214,7 +213,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_spawn_ready()
                 .push(discover::Layer::new(
                     DISCOVER_UPDATE_BUFFER_CAPACITY,
-                    buffer.dispatch_timeout * 2,
+                    router_max_idle_age,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
                 .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
@@ -268,14 +267,9 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
-                    |req: &http::Request<_>| {
-                        req.extensions()
-                            .get::<Addr>()
-                            .cloned()
-                            .map(|addr| DstAddr::outbound(addr, http::Settings::from_request(req)))
-                    },
+                    |dst: &DstAddr| dst.clone(),
                 ))
-                .serves::<Addr>()
+                .serves::<DstAddr>()
                 .into_inner()
                 .spawn();
 
