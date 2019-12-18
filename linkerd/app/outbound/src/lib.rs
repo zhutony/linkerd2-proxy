@@ -20,8 +20,7 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc::{self, Make},
-    trace, trace_context,
+    svc, trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     Addr, Conditional, DispatchDeadline, Error, ProxyMetrics, CANONICAL_DST_HEADER,
     DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
@@ -130,12 +129,11 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push_pending()
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
                 .push(http::normalize_uri::layer())
-                .makes::<Endpoint>();
+                .serves::<Endpoint>();
 
             // A per-`outbound::Endpoint` stack that:
             //
@@ -156,7 +154,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // disabled due to information leagkage
                 //.push(add_remote_ip_on_rsp::layer())
                 //.push(add_server_id_on_rsp::layer())
-                .makes::<Endpoint>()
+                .serves::<Endpoint>()
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -166,7 +164,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(|endpoint: &Endpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .makes::<Endpoint>();
+                .serves::<Endpoint>();
 
             // A per-`dst::Route` layer that uses profile data to configure
             // a per-route layer.
@@ -225,7 +223,7 @@ impl<A: OrigDstAddr> Config<A> {
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
-            let distributor = svc::stack(endpoint_stack.into_inner().into_service())
+            let distributor = svc::stack(endpoint_stack)
                 .serves::<Endpoint>()
                 .push(fallback::layer(
                     balancer_layer.boxed(),
@@ -253,10 +251,10 @@ impl<A: OrigDstAddr> Config<A> {
             //   `DstAddr` with a resolver.
             let dst_stack = distributor
                 .makes_clone::<DstAddr>()
-                .push(
-                    http::profiles::Layer::new(profiles_client, make_dst_route_proxy.into_inner())
-                        .with_split(),
-                )
+                .push(http::profiles::Layer::with_split(
+                    profiles_client,
+                    make_dst_route_proxy.into_inner(),
+                ))
                 .makes::<DstAddr>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER));
 
@@ -268,13 +266,13 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", name = %dst.dst_logical()),
                 ))
-                // Readiness is provided by the distributor.
                 .push(router::Layer::new(
                     router::Config::new(router_capacity, router_max_idle_age),
                     |req: &http::Request<_>| {
-                        req.extensions().get::<Addr>().cloned().map(|addr| {
-                            DstAddr::outbound(addr, http::settings::Settings::from_request(req))
-                        })
+                        req.extensions()
+                            .get::<Addr>()
+                            .cloned()
+                            .map(|addr| DstAddr::outbound(addr, http::Settings::from_request(req)))
                     },
                 ))
                 .serves::<Addr>()

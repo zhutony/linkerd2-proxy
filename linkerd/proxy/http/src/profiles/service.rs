@@ -67,18 +67,25 @@ where
     G: GetRoutes + Clone,
     RMake: Clone,
 {
-    pub fn new(get_routes: G, make_route: RMake) -> Self {
+    fn new(get_routes: G, make_route: RMake, traffic_split: TrafficSplit) -> Self {
         Self {
             get_routes,
             make_route,
+            traffic_split,
             default_route: Route::default(),
-            traffic_split: TrafficSplit::Forward,
         }
     }
 
-    pub fn with_split(mut self) -> Self {
-        self.traffic_split = TrafficSplit::Split(SmallRng::from_entropy());
-        self
+    pub fn without_split(get_routes: G, make_route: RMake) -> Self {
+        Self::new(get_routes, make_route, TrafficSplit::Forward)
+    }
+
+    pub fn with_split(get_routes: G, make_route: RMake) -> Self {
+        Self::new(
+            get_routes,
+            make_route,
+            TrafficSplit::Split(SmallRng::from_entropy()),
+        )
     }
 }
 

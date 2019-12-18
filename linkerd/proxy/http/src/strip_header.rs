@@ -82,6 +82,30 @@ where
     }
 }
 
+impl<H, T, M, R> tower::Service<T> for Stack<H, M, R>
+where
+    H: AsHeaderName + Clone,
+    M: tower::Service<T>,
+{
+    type Response = Service<H, M::Response, R>;
+    type Error = M::Error;
+    type Future = MakeFuture<H, M::Future, R>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        self.inner.poll_ready()
+    }
+
+    fn call(&mut self, t: T) -> Self::Future {
+        let inner = self.inner.call(t);
+        let header = self.header.clone();
+        MakeFuture {
+            header,
+            inner,
+            _marker: PhantomData,
+        }
+    }
+}
+
 // === impl MakeFuture ===
 
 impl<H, F, R> Future for MakeFuture<H, F, R>

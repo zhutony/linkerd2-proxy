@@ -167,7 +167,10 @@ impl<A: OrigDstAddr> Config<A> {
             // 2. Annotates the request with the `DstAddr` so that
             //    `RecognizeEndpoint` can use the value.
             let dst_stack = svc::stack(svc::Shared::new(endpoint_router))
-                .push(profiles::Layer::new(profiles_client, make_dst_route_proxy))
+                .push(profiles::Layer::without_split(
+                    profiles_client,
+                    make_dst_route_proxy,
+                ))
                 .push(insert::target::layer())
                 .push(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(
