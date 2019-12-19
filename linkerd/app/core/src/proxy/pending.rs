@@ -62,14 +62,15 @@ where
     type Future = futures::future::MapErr<S::Future, fn(S::Error) -> Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        let mut svc = match self {
-            Pending::Making(fut) => try_ready!(fut.poll().map_err(Into::into)),
-            Pending::Made(s) => return s.poll_ready().map_err(Into::into),
-        };
-
-        let ret = svc.poll_ready().map_err(Into::into);
-        *self = Pending::Made(svc);
-        ret
+        loop {
+            *self = match self {
+                Pending::Making(fut) => {
+                    let svc = try_ready!(fut.poll().map_err(Into::into));
+                    Pending::Made(svc)
+                }
+                Pending::Made(svc) => return svc.poll_ready().map_err(Into::into),
+            };
+        }
     }
 
     fn call(&mut self, req: Req) -> Self::Future {

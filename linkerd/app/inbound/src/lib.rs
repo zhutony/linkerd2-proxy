@@ -7,7 +7,7 @@
 
 use futures::future;
 use linkerd2_app_core::{
-    self as core, classify,
+    self as core, cache, classify,
     config::{ProxyConfig, ServerConfig},
     drain,
     dst::{DstAddr, Route},
@@ -24,7 +24,7 @@ use linkerd2_app_core::{
         server::{Protocol as ServerProtocol, Server},
         tap, tcp,
     },
-    reconnect, router, serve,
+    reconnect, serve,
     spans::SpanConverter,
     svc, trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
@@ -139,11 +139,7 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<Endpoint>()
-                .push(router::Layer::new(
-                    router_capacity,
-                    router_max_idle_age,
-                    RecognizeEndpoint::default(),
-                ))
+                .push(cache::Layer::new(router_capacity, router_max_idle_age))
                 .into_inner()
                 .spawn();
 
@@ -198,39 +194,37 @@ impl<A: OrigDstAddr> Config<A> {
             // address is used.
             let dst_router = dst_stack
                 .makes::<DstAddr>()
-                .push(router::Layer::new(
-                    router_capacity,
-                    router_max_idle_age,
-                    |req: &http::Request<_>| {
-                        let dst = req
-                            .headers()
-                            .get(CANONICAL_DST_HEADER)
-                            .and_then(|dst| {
-                                dst.to_str().ok().and_then(|d| {
-                                    Addr::from_str(d).ok().map(|a| {
-                                        debug!("using {}", CANONICAL_DST_HEADER);
-                                        a
-                                    })
-                                })
-                            })
-                            .or_else(|| {
-                                http_request_l5d_override_dst_addr(req)
-                                    .ok()
-                                    .map(|override_addr| {
-                                        debug!("using {}", DST_OVERRIDE_HEADER);
-                                        override_addr
-                                    })
-                            })
-                            .or_else(|| http_request_authority_addr(req).ok())
-                            .or_else(|| http_request_host_addr(req).ok())
-                            .or_else(|| http_request_orig_dst_addr(req).ok())
-                            .map(|addr| {
-                                DstAddr::inbound(addr, settings::Settings::from_request(req))
-                            });
-                        debug!(dst.logical = ?dst);
-                        dst
-                    },
-                ))
+                .push(cache::Layer::new(router_capacity, router_max_idle_age))
+                //     |req: &http::Request<_>| {
+                //         let dst = req
+                //             .headers()
+                //             .get(CANONICAL_DST_HEADER)
+                //             .and_then(|dst| {
+                //                 dst.to_str().ok().and_then(|d| {
+                //                     Addr::from_str(d).ok().map(|a| {
+                //                         debug!("using {}", CANONICAL_DST_HEADER);
+                //                         a
+                //                     })
+                //                 })
+                //             })
+                //             .or_else(|| {
+                //                 http_request_l5d_override_dst_addr(req)
+                //                     .ok()
+                //                     .map(|override_addr| {
+                //                         debug!("using {}", DST_OVERRIDE_HEADER);
+                //                         override_addr
+                //                     })
+                //             })
+                //             .or_else(|| http_request_authority_addr(req).ok())
+                //             .or_else(|| http_request_host_addr(req).ok())
+                //             .or_else(|| http_request_orig_dst_addr(req).ok())
+                //             .map(|addr| {
+                //                 DstAddr::inbound(addr, settings::Settings::from_request(req))
+                //             });
+                //         debug!(dst.logical = ?dst);
+                //         dst
+                //     },
+                // ))
                 .into_inner()
                 .spawn();
 

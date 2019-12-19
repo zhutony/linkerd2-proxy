@@ -115,10 +115,10 @@ impl fmt::Display for Endpoint {
 
 // === impl RecognizeEndpoint ===
 
-impl<A> router::Recognize<http::Request<A>> for RecognizeEndpoint {
+impl<A> router::Target<http::Request<A>> for RecognizeEndpoint {
     type Target = Endpoint;
 
-    fn recognize(&self, req: &http::Request<A>) -> Option<Self::Target> {
+    fn target(&self, req: &http::Request<A>) -> Self::Target {
         let src = req.extensions().get::<tls::accept::Meta>();
         debug!("inbound endpoint: src={:?}", src);
         let addr = src.and_then(|s| s.addrs.target_addr_if_not_local())?;

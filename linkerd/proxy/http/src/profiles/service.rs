@@ -13,7 +13,7 @@
 use super::concrete;
 use super::requests::Requests;
 use super::{CanGetDestination, GetRoutes, Route, Routes, WithAddr, WithRoute};
-use futures::{future, try_ready, Async, Future, Poll, Stream};
+use futures::{future, Async, Future, Poll, Stream};
 use linkerd2_error::{Error, Never};
 use linkerd2_stack::{Make, Proxy};
 use rand::{rngs::SmallRng, SeedableRng};

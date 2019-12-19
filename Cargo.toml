@@ -32,6 +32,7 @@ members = [
     "linkerd/proxy/transport",
     "linkerd/request-filter",
     "linkerd/reconnect",
+    "linkerd/router",
     "linkerd/signal",
     "linkerd/stack",
     "linkerd/test-util",

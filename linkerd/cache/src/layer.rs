@@ -1,4 +1,4 @@
-use crate::Router;
+use crate::Service;
 use futures::Future;
 use linkerd2_stack::Make;
 use std::time::Duration;
@@ -22,12 +22,10 @@ pub struct Layer {
 }
 
 #[derive(Clone, Debug)]
-pub struct MakeRouter<M> {
+pub struct MakeCache<M> {
     config: Config,
     inner: M,
 }
-
-// === impl Config ===
 
 // === impl Layer ===
 
@@ -43,26 +41,26 @@ impl Layer {
 }
 
 impl<M> tower::layer::Layer<M> for Layer {
-    type Service = MakeRouter<M>;
+    type Service = MakeCache<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        MakeRouter {
+        MakeCache {
             inner,
             config: self.config.clone(),
         }
     }
 }
 
-// === impl MakeRouter ===
+// === impl MakeCache ===
 
-impl<M> MakeRouter<M> {
-    pub fn spawn<T>(&self) -> Router<T, M>
+impl<M> MakeCache<M> {
+    pub fn spawn<T>(&self) -> Service<T, M>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
         M: Make<T> + Clone + Send + Sync + 'static,
         M::Service: Clone + Send + Sync + 'static,
     {
-        let (router, purge) = Router::new(
+        let (service, purge) = Service::new(
             self.inner.clone(),
             self.config.capacity,
             self.config.max_idle_age,
@@ -70,8 +68,8 @@ impl<M> MakeRouter<M> {
         tokio::spawn(
             purge
                 .map_err(|e| match e {})
-                .instrument(info_span!("router.purge")),
+                .instrument(info_span!("cache")),
         );
-        router
+        service
     }
 }

@@ -127,11 +127,11 @@ where
 
 fn map_err_to_5xx(e: Error) -> StatusCode {
     use crate::proxy::buffer;
-    use linkerd2_router::error as router;
+    use linkerd2_cache::error as cache;
     use tower::load_shed::error as shed;
 
-    if let Some(ref c) = e.downcast_ref::<router::NoCapacity>() {
-        warn!("router at capacity ({})", c.0);
+    if let Some(ref c) = e.downcast_ref::<cache::NoCapacity>() {
+        warn!("service cache at capacity ({})", c.0);
         http::StatusCode::SERVICE_UNAVAILABLE
     } else if let Some(_) = e.downcast_ref::<shed::Overloaded>() {
         warn!("server overloaded, max-in-flight reached");

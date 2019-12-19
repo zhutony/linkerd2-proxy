@@ -7,7 +7,7 @@
 
 use futures::future;
 use linkerd2_app_core::{
-    self as core, classify,
+    self as core, cache, classify,
     config::{ProxyConfig, ServerConfig},
     dns, drain,
     dst::{self, DstAddr},
@@ -18,7 +18,7 @@ use linkerd2_app_core::{
         self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
         tap, tcp, Server,
     },
-    reconnect, router, serve,
+    reconnect, serve,
     spans::SpanConverter,
     svc, trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
@@ -199,7 +199,7 @@ impl<A: OrigDstAddr> Config<A> {
             let orig_dst_router_layer = svc::layers()
                 // This buffer holds requests while an endpoint is connecting.
                 .push_pending()
-                .push(router::Layer::new(router_capacity, router_max_idle_age));
+                .push(cache::Layer::new(router_capacity, router_max_idle_age));
             //.push(trace::layer(|_: &DstAddr| info_span!("fallback")));
 
             // Resolves the target via the control plane and balances requests
@@ -260,7 +260,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", name = %dst.dst_logical()),
                 ))
-                .push(router::Layer::new(router_capacity, router_max_idle_age))
+                .push(cache::Layer::new(router_capacity, router_max_idle_age))
                 .serves::<DstAddr>()
                 .into_inner()
                 .spawn();
@@ -297,7 +297,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(|addr: &Addr| info_span!("addr", %addr)))
                 // This router does not need a buffer, since it wraps the
                 // `dst_router` which is always ready.
-                .push(router::Layer::new(
+                .push(cache::Layer::new(
                     router_capacity,
                     router_max_idle_age,
                     //     |req: &http::Request<_>| {
