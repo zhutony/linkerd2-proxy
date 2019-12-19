@@ -1,79 +1,56 @@
-use futures::{try_ready, Future, Poll};
-use linkerd2_error::Error;
+use futures::Poll;
+use linkerd2_stack::Make;
+use std::hash::Hash;
+use tower::util::{Oneshot, ServiceExt};
 
 pub trait Target<Req> {
-    type Target;
+    type Target: Clone + Eq + Hash;
 
     fn target(&self, req: &Req) -> Self::Target;
 }
 
+#[derive(Clone, Debug)]
+pub struct Layer<T> {
+    target: T,
+}
+
+#[derive(Clone, Debug)]
 pub struct Service<T, M> {
     target: T,
     make: M,
 }
 
-pub struct ResponseFuture<T, Req, M: tower::MakeService<T, Req>> {
-    inner: Inner<Req, M::Future, M::Service, <M::Service as tower::Service<Req>>::Future>,
-    _marker: std::marker::PhantomData<fn(T)>,
+impl<T: Clone> Layer<T> {
+    pub fn new(&self, target: T) -> Self {
+        Self { target }
+    }
 }
 
-pub enum Inner<Req, M, S, F> {
-    Make(M, Option<Req>),
-    Ready(S, Option<Req>),
-    Respond(F),
+impl<T: Clone, M> tower::layer::Layer<M> for Layer<T> {
+    type Service = Service<T, M>;
+
+    fn layer(&self, make: M) -> Self::Service {
+        let target = self.target.clone();
+        Service { make, target }
+    }
 }
 
-impl<Req, T, M> tower::Service<Req> for Service<T, M>
+impl<Req, T, M, S> tower::Service<Req> for Service<T, M>
 where
     T: Target<Req>,
-    M: tower::MakeService<T::Target, Req>,
-    M::Service: Clone,
-    M::Error: Into<Error>,
-    M::MakeError: Into<Error>,
+    M: Make<T::Target, Service = S>,
+    S: tower::Service<Req> + Clone,
 {
-    type Response = M::Response;
-    type Error = Error;
-    type Future = ResponseFuture<T::Target, Req, M>;
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Oneshot<S, Req>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.make.poll_ready().map_err(Into::into)
+        Ok(().into())
     }
 
     fn call(&mut self, req: Req) -> Self::Future {
         let target = self.target.target(&req);
-        ResponseFuture {
-            inner: Inner::Make(self.make.make_service(target), Some(req)),
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<T, Req, M> Future for ResponseFuture<T, Req, M>
-where
-    M: tower::MakeService<T, Req>,
-    M::Service: Clone,
-    M::Error: Into<Error>,
-    M::MakeError: Into<Error>,
-{
-    type Item = M::Response;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        use tower::Service;
-
-        loop {
-            self.inner = match self.inner {
-                Inner::Make(ref mut fut, ref mut req) => {
-                    let svc = try_ready!(fut.poll().map_err(Into::into));
-                    Inner::Ready(svc, req.take())
-                }
-                Inner::Ready(ref mut svc, ref mut req) => {
-                    try_ready!(svc.poll_ready().map_err(Into::into));
-                    let req = req.take().expect("polled after ready");
-                    Inner::Respond(svc.call(req))
-                }
-                Inner::Respond(ref mut fut) => return fut.poll().map_err(Into::into),
-            }
-        }
+        self.make.make(target).oneshot(req)
     }
 }

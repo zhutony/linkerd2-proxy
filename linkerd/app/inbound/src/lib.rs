@@ -157,13 +157,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(classify::layer())
                 .makes::<Route>();
 
-            // A per-`DstAddr` stack that does the following:
-            //
-            // 1. Determines the profile of the destination and applies
-            //    per-route policy.
-            // 2. Annotates the request with the `DstAddr` so that
-            //    `RecognizeEndpoint` can use the value.
-            let dst_stack = svc::stack(svc::Shared::new(endpoint_router))
+            let make_dst = svc::stack(svc::Shared::new(endpoint_router))
                 .push(profiles::Layer::without_split(
                     profiles_client,
                     make_dst_route_proxy,
@@ -172,7 +166,12 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("logical", dst = %dst.dst_logical()),
-                ));
+                ))
+                .makes::<DstAddr>()
+                .push(cache::Layer::new(router_capacity, router_max_idle_age))
+                .serves::<DstAddr>()
+                .into_inner()
+                .spawn();
 
             // Routes requests to a `DstAddr`.
             //
@@ -192,41 +191,37 @@ impl<A: OrigDstAddr> Config<A> {
             //
             // 6. Finally, if the tls::accept::Meta had an SO_ORIGINAL_DST, this TCP
             // address is used.
-            let dst_router = dst_stack
-                .makes::<DstAddr>()
-                .push(cache::Layer::new(router_capacity, router_max_idle_age))
-                //     |req: &http::Request<_>| {
-                //         let dst = req
-                //             .headers()
-                //             .get(CANONICAL_DST_HEADER)
-                //             .and_then(|dst| {
-                //                 dst.to_str().ok().and_then(|d| {
-                //                     Addr::from_str(d).ok().map(|a| {
-                //                         debug!("using {}", CANONICAL_DST_HEADER);
-                //                         a
-                //                     })
-                //                 })
-                //             })
-                //             .or_else(|| {
-                //                 http_request_l5d_override_dst_addr(req)
-                //                     .ok()
-                //                     .map(|override_addr| {
-                //                         debug!("using {}", DST_OVERRIDE_HEADER);
-                //                         override_addr
-                //                     })
-                //             })
-                //             .or_else(|| http_request_authority_addr(req).ok())
-                //             .or_else(|| http_request_host_addr(req).ok())
-                //             .or_else(|| http_request_orig_dst_addr(req).ok())
-                //             .map(|addr| {
-                //                 DstAddr::inbound(addr, settings::Settings::from_request(req))
-                //             });
-                //         debug!(dst.logical = ?dst);
-                //         dst
-                //     },
-                // ))
-                .into_inner()
-                .spawn();
+            let dst_router = dst_stack;
+            //     |req: &http::Request<_>| {
+            //         let dst = req
+            //             .headers()
+            //             .get(CANONICAL_DST_HEADER)
+            //             .and_then(|dst| {
+            //                 dst.to_str().ok().and_then(|d| {
+            //                     Addr::from_str(d).ok().map(|a| {
+            //                         debug!("using {}", CANONICAL_DST_HEADER);
+            //                         a
+            //                     })
+            //                 })
+            //             })
+            //             .or_else(|| {
+            //                 http_request_l5d_override_dst_addr(req)
+            //                     .ok()
+            //                     .map(|override_addr| {
+            //                         debug!("using {}", DST_OVERRIDE_HEADER);
+            //                         override_addr
+            //                     })
+            //             })
+            //             .or_else(|| http_request_authority_addr(req).ok())
+            //             .or_else(|| http_request_host_addr(req).ok())
+            //             .or_else(|| http_request_orig_dst_addr(req).ok())
+            //             .map(|addr| {
+            //                 DstAddr::inbound(addr, settings::Settings::from_request(req))
+            //             });
+            //         debug!(dst.logical = ?dst);
+            //         dst
+            //     },
+            // ))
 
             // Share a single semaphore across all requests to signal when
             // the proxy is overloaded.

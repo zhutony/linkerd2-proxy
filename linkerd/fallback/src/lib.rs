@@ -1,6 +1,6 @@
 #![deny(warnings, rust_2018_idioms)]
 
-use futures::{try_ready, Future, Poll};
+use futures::{try_ready, Async, Future, Poll};
 use linkerd2_error::Error;
 use std::marker::PhantomData;
 use tracing::trace;
@@ -157,10 +157,9 @@ where
                     Err(error) => {
                         let error = error.into();
                         if (self.predicate)(&error) {
-                            trace!("{} matches; trying to fall back", error);
+                            trace!(%error, "trying to fall back");
                             FallbackState::Waiting(self.target.take())
                         } else {
-                            trace!("{} does not match; not falling back", error);
                             return Err(error);
                         }
                     }
@@ -175,7 +174,8 @@ where
                 // We've called the fallback service and are waiting for its
                 // future to complete.
                 FallbackState::Fallback(ref mut f) => {
-                    return f.poll().map(|a| a.map(Into::into)).map_err(Into::into);
+                    let svc = try_ready!(f.poll().map_err(Into::into));
+                    return Ok(Async::Ready(svc.into()));
                 }
             }
         }

@@ -198,9 +198,7 @@ impl<A: OrigDstAddr> Config<A> {
             // used as the server name when connecting to the endpoint.
             let orig_dst_router_layer = svc::layers()
                 // This buffer holds requests while an endpoint is connecting.
-                .push_pending()
-                .push(cache::Layer::new(router_capacity, router_max_idle_age));
-            //.push(trace::layer(|_: &DstAddr| info_span!("fallback")));
+                .push(unimplemented!("map target"));
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
@@ -219,16 +217,18 @@ impl<A: OrigDstAddr> Config<A> {
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
             let distributor = svc::stack(endpoint_stack)
-                .serves::<Endpoint>()
                 .push(fallback::layer(
                     balancer_layer.boxed(),
                     orig_dst_router_layer.boxed(),
                 ))
-                //.push(trace::layer(|_: &DstAddr| info_span!("discover")))
-                .serves::<DstAddr>()
                 .push(trace::layer(
                     |dst: &DstAddr| info_span!("concrete", name = %dst.dst_concrete()),
-                ));
+                ))
+                .serves::<DstAddr>()
+                .push_pending()
+                .push_buffer(10, DispatchDeadline::extract)
+                //.push(trace::layer(|_: &DstAddr| info_span!("discover")))
+                .push(cache::Layer::new(router_capacity, router_max_idle_age));
 
             // A per-`DstAddr` stack that does the following:
             //

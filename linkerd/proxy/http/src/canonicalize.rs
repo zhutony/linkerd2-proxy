@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::timer::Timeout;
 use tracing::warn;
 
+// FIXME the resolver should be abstracted to a trait so that this can be tested
+// without a real DNS service.
 #[derive(Debug, Clone)]
 pub struct Layer {
     resolver: dns::Resolver,
@@ -41,10 +43,10 @@ pub enum MakeFuture<M: tower::Service<Addr>> {
 
 // === Layer ===
 
-// FIXME the resolver should be abstracted to a trait so that this can be tested
-// without a real DNS service.
-pub fn layer(resolver: dns::Resolver, timeout: Duration) -> Layer {
-    Layer { resolver, timeout }
+impl Layer {
+    pub fn new(resolver: dns::Resolver, timeout: Duration) -> Self {
+        Layer { resolver, timeout }
+    }
 }
 
 impl<M> tower::layer::Layer<M> for Layer
@@ -79,11 +81,14 @@ where
     fn call(&mut self, addr: Addr) -> Self::Future {
         match addr.clone() {
             Addr::Socket(_) => MakeFuture::Ready(self.inner.clone(), addr),
-            Addr::Name(original) => MakeFuture::Refine {
-                future: Timeout::new(self.resolver.refine(original.name()), self.timeout),
-                make: self.inner.clone(),
-                original,
-            },
+            Addr::Name(original) => {
+                let refine = self.resolver.refine(original.name());
+                MakeFuture::Refine {
+                    future: Timeout::new(refine, self.timeout),
+                    make: self.inner.clone(),
+                    original,
+                }
+            }
         }
     }
 }
