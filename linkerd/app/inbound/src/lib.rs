@@ -120,12 +120,11 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push_pending()
                 .push(trace_context::layer(span_sink.clone().map(|span_sink| {
                     SpanConverter::client(span_sink, trace_labels())
                 })))
                 .push(normalize_uri::layer())
-                .makes::<Endpoint>();
+                .serves::<Endpoint>();
 
             // A stack configured by `router::Config`, responsible for building
             // a router made of route stacks configured by `inbound::Endpoint`.
@@ -137,6 +136,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |endpoint: &Endpoint| info_span!("endpoint", peer.addr = %endpoint.addr),
                 ))
+                .push_pending()
                 .push_buffer(buffer.max_in_flight, DispatchDeadline::extract)
                 .makes::<Endpoint>()
                 .push(cache::Layer::new(router_capacity, router_max_idle_age))

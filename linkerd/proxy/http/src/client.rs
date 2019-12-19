@@ -24,7 +24,7 @@ pub struct Layer<T, B> {
     _p: PhantomData<fn(T) -> B>,
 }
 
-type HyperMakeClient<C, T, B> = hyper::MakeClient<HyperConnect<C, T>, B>;
+type HyperMakeClient<C, T, B> = hyper::Client<HyperConnect<C, T>, B>;
 
 /// A `MakeService` that can speak either HTTP/1 or HTTP/2.
 pub struct MakeClient<C, T, B> {
@@ -157,12 +157,9 @@ where
     }
 }
 
-impl<C, T, B> Clone for MakeClient<C, T, B>
-where
-    C: Clone,
-{
+impl<C: Clone, T, B> Clone for MakeClient<C, T, B> {
     fn clone(&self) -> Self {
-        Client {
+        Self {
             connect: self.connect.clone(),
             h2_settings: self.h2_settings,
             _p: PhantomData,
