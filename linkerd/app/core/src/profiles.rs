@@ -76,44 +76,62 @@ where
     }
 }
 
-impl<T> profiles::GetRoutes for Client<T>
+impl<S> tower::Service<NameAddr> for Client<S>
 where
-    T: GrpcService<BoxBody> + Clone + Send + 'static,
-    T::ResponseBody: Send,
-    <T::ResponseBody as Body>::Data: Send,
-    T::Future: Send,
+    S: GrpcService<BoxBody> + Clone + Send + 'static,
+    S::ResponseBody: Send,
+    <S::ResponseBody as Body>::Data: Send,
+    S::Future: Send,
 {
-    type Stream = Rx;
+    type Response = Option<watch::Receiver<profiles::Routes>>;
+    type Error = S::Error;
+    type Future = ProfileFuture<S::Future, S>;
 
-    fn get_routes(&self, dst: &NameAddr) -> Option<Self::Stream> {
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        self.service.poll_ready()
+    }
+
+    fn call(&mut self, dst: NameAddr) -> Self::Future {
         if !self.suffixes.iter().any(|s| s.contains(dst.name())) {
             debug!("name not in profile suffixes");
-            return None;
+            return ProfileFuture::Skipped;
         }
-        debug!("watching routes");
 
-        // This oneshot allows the daemon to be notified when the Self::Stream
-        // is dropped.
-        let (hangup_tx, hangup_rx) = oneshot::channel();
-        let (tx, rx) = watch::channel(profiles::Routes::default());
-        let daemon = Daemon {
-            tx,
-            hangup: hangup_rx,
-            state: State::Disconnected,
+        debug!("watching routes");
+        let request = api::GetDestination {
+            path: dst.into_string(),
+            context_token: self.context_token.clone(),
+            ..Default::default()
+        };
+        let future = self.service.get(request.clone());
+
+        ProfileFuture::Pending {
+            future,
             service: self.service.clone(),
             backoff: self.backoff,
-            request: api::GetDestination {
-                path: format!("{}", dst),
-                context_token: self.context_token.clone(),
-                ..Default::default()
-            },
+            request: request,
         };
+    }
+}
 
-        tokio::spawn(daemon.in_current_span().map_err(|never| match never {}));
-        Some(Rx {
-            rx,
-            _hangup: hangup_tx,
-        })
+pub enum ProfileFuture<S: GrpcService<BoxBody>> {
+    Skipped,
+    Pending {
+        future: S::Future,
+        backoff: Duration,
+        request: api::GetDestination,
+        service: api::client::Destination<S>,
+    },
+}
+
+impl<F> Future for ProfileFuture<F> {
+    type Item = F::Item;
+    type Error = F::Error;
+
+    fn poll(&mut self) -> Poll<F::Item, F::Error> {
+        match self {
+            ProfileFuture::Pending { future } => future,
+        }
     }
 }
 

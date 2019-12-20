@@ -1,5 +1,4 @@
-use http;
-use linkerd2_app_core::{proxy::http::orig_proto, svc, transport::tls};
+use linkerd2_app_core::{proxy::http::orig_proto, svc};
 use std::marker::PhantomData;
 use tracing::trace;
 
@@ -24,16 +23,13 @@ impl<A, B> Clone for Layer<A, B> {
     }
 }
 
-impl<M, A, B> svc::Layer<M> for Layer<A, B>
-where
-    M: svc::MakeService<tls::accept::Meta, http::Request<A>, Response = http::Response<B>>,
-{
+impl<M, A, B> tower::layer::Layer<M> for Layer<A, B> {
     type Service = Stack<M, A, B>;
 
     fn layer(&self, inner: M) -> Self::Service {
         Stack {
             inner,
-            _marker: PhantomData,
+            _marker: self.0,
         }
     }
 }
@@ -49,19 +45,15 @@ impl<M: Clone, A, B> Clone for Stack<M, A, B> {
     }
 }
 
-impl<M, A, B> svc::Make<tls::accept::Meta> for Stack<M, A, B>
+impl<T, M, A, B> svc::Make<T> for Stack<M, A, B>
 where
-    M: svc::Make<tls::accept::Meta>,
+    M: svc::Make<T>,
     M::Service: svc::Service<http::Request<A>, Response = http::Response<B>>,
 {
     type Service = orig_proto::Downgrade<M::Service>;
 
-    fn make(&self, target: tls::accept::Meta) -> Self::Service {
-        trace!(
-            "supporting {} downgrades for source={:?}",
-            orig_proto::L5D_ORIG_PROTO,
-            target,
-        );
+    fn make(&self, target: T) -> Self::Service {
+        trace!("supporting {} downgrades", orig_proto::L5D_ORIG_PROTO);
         orig_proto::Downgrade::new(self.inner.make(target))
     }
 }

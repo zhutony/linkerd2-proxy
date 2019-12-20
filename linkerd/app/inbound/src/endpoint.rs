@@ -1,13 +1,14 @@
-use http;
 use indexmap::IndexMap;
 use linkerd2_app_core::{
-    classify,
-    dst::{DstAddr, Route},
-    metric_labels::EndpointLabels,
-    proxy::{http::settings, identity, tap},
+    classify, dst, http_request_authority_addr, http_request_host_addr,
+    http_request_l5d_override_dst_addr, http_request_orig_dst_addr, metric_labels,
+    proxy::{
+        http::{self, profiles},
+        identity, tap,
+    },
     router,
     transport::{connect, tls},
-    Conditional, NameAddr,
+    Addr, Conditional, NameAddr, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER,
 };
 use std::fmt;
 use std::net::SocketAddr;
@@ -15,34 +16,56 @@ use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Endpoint {
+pub struct Target {
     pub addr: SocketAddr,
     pub dst_name: Option<NameAddr>,
-    pub http_settings: settings::Settings,
+    pub http_settings: http::Settings,
     pub tls_client_id: tls::PeerIdentity,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct RecognizeEndpoint {
-    _p: (),
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Profile(Option<NameAddr>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Endpoint {
+    port: u16,
+    settings: http::Settings,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecognizeTarget {
+    accept: tls::accept::Meta,
 }
 
 // === impl Endpoint ===
 
-impl From<SocketAddr> for Endpoint {
-    fn from(addr: SocketAddr) -> Self {
+impl connect::HasPeerAddr for Endpoint {
+    fn peer_addr(&self) -> SocketAddr {
+        ([127, 0, 0, 1], self.port).into()
+    }
+}
+
+impl http::settings::HasSettings for Endpoint {
+    fn http_settings(&self) -> &http::Settings {
+        &self.settings
+    }
+}
+
+impl From<Target> for Endpoint {
+    fn from(target: Target) -> Self {
         Self {
-            addr,
-            dst_name: None,
-            http_settings: settings::Settings::NotHttp,
-            tls_client_id: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
+            port: target.addr.port(),
+            settings: target.http_settings,
         }
     }
 }
 
-impl connect::HasPeerAddr for Endpoint {
-    fn peer_addr(&self) -> SocketAddr {
-        self.addr
+impl From<SocketAddr> for Endpoint {
+    fn from(addr: SocketAddr) -> Self {
+        Self {
+            port: addr.port(),
+            settings: http::Settings::NotHttp,
+        }
     }
 }
 
@@ -52,13 +75,64 @@ impl tls::HasPeerIdentity for Endpoint {
     }
 }
 
-impl settings::HasSettings for Endpoint {
-    fn http_settings(&self) -> &settings::Settings {
+// === impl Profile ===
+
+impl profiles::CanGetDestination for Profile {
+    fn get_destination(&self) -> Option<&NameAddr> {
+        self.0.as_ref()
+    }
+}
+
+// === impl Target ===
+
+impl http::settings::HasSettings for Target {
+    fn http_settings(&self) -> &http::Settings {
         &self.http_settings
     }
 }
 
-impl classify::CanClassify for Endpoint {
+impl tls::HasPeerIdentity for Target {
+    fn peer_identity(&self) -> tls::PeerIdentity {
+        Conditional::None(tls::ReasonForNoPeerName::Loopback.into())
+    }
+}
+
+impl Into<metric_labels::EndpointLabels> for Target {
+    fn into(self) -> metric_labels::EndpointLabels {
+        metric_labels::EndpointLabels {
+            dst_logical: self.dst_name.clone(),
+            dst_concrete: self.dst_name,
+            direction: metric_labels::Direction::In,
+            tls_id: self.tls_client_id.map(metric_labels::TlsId::ClientId),
+            labels: None,
+        }
+    }
+}
+
+impl profiles::WithRoute for Target {
+    type Route = dst::Route;
+
+    fn with_route(self, route: profiles::Route) -> Self::Route {
+        dst::Route {
+            route,
+            target: self
+                .dst_name
+                .clone()
+                .map(Into::into)
+                .unwrap_or_else(|| Addr::Socket(self.addr)),
+            direction: metric_labels::Direction::In,
+        }
+    }
+}
+
+impl profiles::WithAddr for Target {
+    fn with_addr(mut self, addr: NameAddr) -> Self {
+        self.target = addr.into();
+        self
+    }
+}
+
+impl classify::CanClassify for Target {
     type Classify = classify::Request;
 
     fn classify(&self) -> classify::Request {
@@ -66,7 +140,7 @@ impl classify::CanClassify for Endpoint {
     }
 }
 
-impl tap::Inspect for Endpoint {
+impl tap::Inspect for Target {
     fn src_addr<B>(&self, req: &http::Request<B>) -> Option<SocketAddr> {
         req.extensions()
             .get::<tls::accept::Meta>()
@@ -99,7 +173,9 @@ impl tap::Inspect for Endpoint {
     }
 
     fn route_labels<B>(&self, req: &http::Request<B>) -> Option<Arc<IndexMap<String, String>>> {
-        req.extensions().get::<Route>().map(|r| r.labels().clone())
+        req.extensions()
+            .get::<dst::Route>()
+            .map(|r| r.route.labels().clone())
     }
 
     fn is_outbound<B>(&self, _: &http::Request<B>) -> bool {
@@ -107,109 +183,54 @@ impl tap::Inspect for Endpoint {
     }
 }
 
-impl fmt::Display for Endpoint {
+impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.addr.fmt(f)
     }
 }
 
-// === impl RecognizeEndpoint ===
+// === impl RecognizeTarget ===
 
-impl<A> router::Target<http::Request<A>> for RecognizeEndpoint {
-    type Target = Endpoint;
+impl RecognizeTarget {
+    pub fn new(accept: tls::accept::Meta) -> Self {
+        Self { accept }
+    }
+}
+
+impl<A> router::Target<http::Request<A>> for RecognizeTarget {
+    type Target = Target;
 
     fn target(&self, req: &http::Request<A>) -> Self::Target {
-        let src = req.extensions().get::<tls::accept::Meta>();
-        debug!("inbound endpoint: src={:?}", src);
-        let addr = src.and_then(|s| s.addrs.target_addr_if_not_local())?;
+        let dst_name = req
+            .headers()
+            .get(CANONICAL_DST_HEADER)
+            .and_then(|dst| {
+                dst.to_str().ok().and_then(|d| {
+                    Addr::from_str(d).ok().map(|a| {
+                        debug!("using {}", CANONICAL_DST_HEADER);
+                        a
+                    })
+                })
+            })
+            .or_else(|| {
+                http_request_l5d_override_dst_addr(req)
+                    .ok()
+                    .map(|override_addr| {
+                        debug!("using {}", DST_OVERRIDE_HEADER);
+                        override_addr
+                    })
+            })
+            .or_else(|| http_request_authority_addr(req).ok())
+            .or_else(|| http_request_host_addr(req).ok())
+            .or_else(|| http_request_orig_dst_addr(req).ok())
+            .and_then(|a| a.name_addr())
+            .cloned();
 
-        let tls_client_id = src
-            .map(|s| s.peer_identity.clone())
-            .unwrap_or_else(|| Conditional::None(tls::ReasonForNoIdentity::Disabled));
-
-        let dst_addr = req
-            .extensions()
-            .get::<DstAddr>()
-            .expect("request extensions should have DstAddr");
-
-        let dst_name = dst_addr.as_ref().name_addr().cloned();
-        let http_settings = dst_addr.http_settings;
-
-        debug!(
-            "inbound endpoint: dst={:?}, proto={:?}",
-            dst_name, http_settings
-        );
-
-        Some(Endpoint {
-            addr,
+        Target {
             dst_name,
-            http_settings,
-            tls_client_id,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Endpoint, RecognizeEndpoint};
-    use http;
-    use linkerd2_app_core::{
-        proxy::http::Settings,
-        router::Recognize,
-        transport::{listen, tls},
-        Conditional,
-    };
-    use quickcheck::quickcheck;
-    use std::net;
-
-    fn make_test_endpoint(addr: net::SocketAddr) -> Endpoint {
-        let tls_client_id = TLS_DISABLED;
-        Endpoint {
-            addr,
-            dst_name: None,
-            http_settings: Settings::Http2,
-            tls_client_id,
-        }
-    }
-
-    fn dst_addr(req: &mut http::Request<()>) {
-        use linkerd2_app_core::{dst::DstAddr, Addr};
-        req.extensions_mut().insert(DstAddr::inbound(
-            Addr::Socket(([0, 0, 0, 0], 0).into()),
-            Settings::Http2,
-        ));
-    }
-
-    const TLS_DISABLED: tls::PeerIdentity = Conditional::None(tls::ReasonForNoIdentity::Disabled);
-
-    quickcheck! {
-        fn recognize_orig_dst(
-            orig_dst: net::SocketAddr,
-            local: net::SocketAddr,
-            peer: net::SocketAddr
-        ) -> bool {
-            let addrs = listen::Addrs::new(peer, local, Some(orig_dst) ) ;
-            let src = tls::accept::Meta { addrs, peer_identity: TLS_DISABLED } ;
-            let rec = src.addrs.target_addr_if_not_local().map(make_test_endpoint);
-
-            let mut req = http::Request::new(());
-            req.extensions_mut().insert(src);
-            dst_addr(&mut req);
-
-            RecognizeEndpoint::default().recognize(&req) == rec
-        }
-    }
-}
-
-impl Into<EndpointLabels> for Endpoint {
-    fn into(self) -> EndpointLabels {
-        use linkerd2_app_core::metric_labels::{Direction, TlsId};
-        EndpointLabels {
-            dst_logical: self.dst_name.clone(),
-            dst_concrete: self.dst_name,
-            direction: Direction::In,
-            tls_id: self.tls_client_id.map(TlsId::ClientId),
-            labels: None,
+            addr: self.accept.addrs.target_addr(),
+            tls_client_id: self.accept.peer_identity.clone(),
+            http_settings: http::Settings::from_request(req),
         }
     }
 }

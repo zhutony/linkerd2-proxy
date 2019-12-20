@@ -4,7 +4,7 @@ use tracing::trace;
 
 /// A proxy that applies per-request "routes" over a common inner service.
 #[derive(Clone, Debug, Default)]
-pub struct Requests<T: WithRoute, M: Make<T::Output>> {
+pub struct Requests<T: WithRoute, M: Make<T::Route>> {
     target: T,
     make: M,
     default: M::Service,
@@ -14,7 +14,7 @@ pub struct Requests<T: WithRoute, M: Make<T::Output>> {
 impl<T, M> Requests<T, M>
 where
     T: Clone + WithRoute,
-    M: Make<T::Output>,
+    M: Make<T::Route>,
 {
     pub fn new(target: T, make: M, default: Route) -> Self {
         let default = {
@@ -43,7 +43,7 @@ where
 impl<T, M, P, B, S> Proxy<http::Request<B>, S> for Requests<T, M>
 where
     T: WithRoute,
-    M: Make<T::Output, Service = P>,
+    M: Make<T::Route, Service = P>,
     P: Proxy<http::Request<B>, S>,
     S: tower::Service<P::Request>,
 {

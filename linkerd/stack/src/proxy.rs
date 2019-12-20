@@ -13,6 +13,7 @@ pub trait Proxy<Req, S: tower::Service<Self::Request>> {
     fn into_service(self, inner: S) -> Service<Self, S>
     where
         Self: Sized,
+        S: tower::Service<Self::Request>,
     {
         Service::new(self, inner)
     }

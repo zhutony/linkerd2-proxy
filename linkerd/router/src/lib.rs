@@ -27,7 +27,7 @@ pub struct Router<T, M> {
 }
 
 impl<T: Clone> Layer<T> {
-    pub fn new(&self, make_target: T) -> Self {
+    pub fn new(make_target: T) -> Self {
         Self { make_target }
     }
 }

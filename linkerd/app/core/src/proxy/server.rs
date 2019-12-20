@@ -92,7 +92,7 @@ where
 impl<L, F, H, B> Server<L, F, H, B>
 where
     L: TransportLabels<Protocol, Labels = TransportKey>,
-    H: Make<tls::accept::Meta> + Clone,
+    H: Make<tls::accept::Meta>,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>>,
     Self: Accept<Connection>,
 {
@@ -126,7 +126,7 @@ where
     L: TransportLabels<Protocol, Labels = TransportKey>,
     F: Accept<(tls::accept::Meta, transport::metrics::Io<BoxedIo>)> + Clone + Send + 'static,
     F::Future: Send + 'static,
-    H: Make<tls::accept::Meta> + Clone + Send + 'static,
+    H: Make<tls::accept::Meta> + Send + 'static,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>, Error = Error>
         + Send
         + 'static,

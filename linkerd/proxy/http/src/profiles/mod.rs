@@ -1,9 +1,9 @@
 use super::retry::Budget;
-use futures::Stream;
+use futures::{Future, Poll};
 use http;
 use indexmap::IndexMap;
-use linkerd2_addr::NameAddr;
-use linkerd2_error::Never;
+use linkerd2_addr::{Addr, NameAddr};
+use linkerd2_error::Error;
 use regex::Regex;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -11,6 +11,7 @@ use std::iter::FromIterator;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 
 mod concrete;
 mod requests;
@@ -34,17 +35,38 @@ pub struct Routes {
 ///
 /// The stream updates with all routes for the given destination. The stream
 /// never ends and cannot fail.
-pub trait GetRoutes {
-    type Stream: Stream<Item = Routes, Error = Never>;
+pub trait GetRoutes<T> {
+    type Error: Into<Error>;
+    type Future: Future<Item = Option<watch::Receiver<Routes>>, Error = Self::Error>;
 
-    fn get_routes(&self, dst: &NameAddr) -> Option<Self::Stream>;
+    fn poll_ready(&mut self) -> Poll<(), Self::Error>;
+
+    fn get_routes(&mut self, target: T) -> Self::Future;
+}
+
+impl<T, S> GetRoutes<T> for S
+where
+    T: CanGetDestination,
+    S: tower::Service<Addr, Response = Option<watch::Receiver<Routes>>>,
+    S::Error: Into<Error>,
+{
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        tower::Service::poll_ready(self)
+    }
+
+    fn get_routes(&mut self, target: T) -> Self::Future {
+        tower::Service::call(self, target.get_destination())
+    }
 }
 
 /// Implemented by target types that may be combined with a Route.
 pub trait WithRoute {
-    type Output;
+    type Route;
 
-    fn with_route(self, route: Route) -> Self::Output;
+    fn with_route(self, route: Route) -> Self::Route;
 }
 
 /// Implemented by target types that can have their `NameAddr` destination
@@ -56,7 +78,7 @@ pub trait WithAddr {
 /// Implemented by target types that may have a `NameAddr` destination that
 /// can be discovered via `GetRoutes`.
 pub trait CanGetDestination {
-    fn get_destination(&self) -> Option<&NameAddr>;
+    fn get_destination(&self) -> Addr;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]

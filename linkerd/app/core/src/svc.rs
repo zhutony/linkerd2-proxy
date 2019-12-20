@@ -31,10 +31,6 @@ pub fn stack<S>(inner: S) -> Stack<S> {
     Stack(inner)
 }
 
-pub fn proxies() -> Proxies<()> {
-    Proxies(())
-}
-
 impl<L> Layers<L> {
     pub fn push<O>(self, outer: O) -> Layers<Pair<L, O>> {
         Layers(Pair::new(self.0, outer))
@@ -173,43 +169,5 @@ where
 
     fn call(&mut self, t: T) -> Self::Future {
         self.0.call(t)
-    }
-}
-
-impl<P> Proxies<P> {
-    pub fn push<L: Layer<P>>(self, layer: L) -> Proxies<L::Service> {
-        Proxies(layer.layer(self.0))
-    }
-
-    /// Validates that this stack makes T-typed targets.
-    pub fn makes<T>(self) -> Self
-    where
-        P: Make<T>,
-    {
-        self
-    }
-
-    /// Validates that this stack makes T-typed targets.
-    pub fn makes_clone<T>(self) -> Self
-    where
-        P: Make<T>,
-        P::Service: Clone,
-    {
-        self
-    }
-
-    pub fn into_inner(self) -> P {
-        self.0
-    }
-}
-
-impl<T, P> Make<T> for Proxies<P>
-where
-    P: Make<T>,
-{
-    type Service = P::Service;
-
-    fn make(&self, t: T) -> Self::Service {
-        self.0.make(t)
     }
 }

@@ -122,7 +122,6 @@ impl<M: Clone, D: Clone, Req> Clone for Make<M, D, Req> {
 
 impl<T, M, D, Req> svc::Service<T> for Make<M, D, Req>
 where
-    T: Clone + Send + Sync + 'static,
     M: svc::Service<T>,
     M::Response: svc::Service<Req> + Send + 'static,
     M::Error: Into<Error>,
@@ -154,7 +153,6 @@ where
 
 impl<T, M, D, Req> svc::Make<T> for Make<M, D, Req>
 where
-    T: Clone + Send + Sync + 'static,
     M: svc::Make<T>,
     M::Service: svc::Service<Req> + Send + 'static,
     <M::Service as svc::Service<Req>>::Future: Send,
