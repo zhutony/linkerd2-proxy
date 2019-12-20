@@ -27,6 +27,20 @@ pub struct Rx {
     _hangup: oneshot::Sender<Never>,
 }
 
+pub type Receiver = watch::Receiver<profiles::Routes>;
+
+type Sender = watch::Sender<profiles::Routes>;
+
+pub enum ProfileFuture<S: GrpcService<BoxBody>> {
+    Skipped,
+    Pending {
+        future: grpc::client::server_streaming::ResponseFuture<api::DestinationProfile, S::Future>,
+        backoff: Duration,
+        request: api::GetDestination,
+        service: api::client::Destination<S>,
+    },
+}
+
 struct Daemon<T>
 where
     T: GrpcService<BoxBody>,
@@ -34,8 +48,7 @@ where
     backoff: Duration,
     service: api::client::Destination<T>,
     state: State<T>,
-    tx: watch::Sender<profiles::Routes>,
-    hangup: oneshot::Receiver<Never>,
+    tx: Sender,
     request: api::GetDestination,
 }
 
@@ -83,9 +96,9 @@ where
     <S::ResponseBody as Body>::Data: Send,
     S::Future: Send,
 {
-    type Response = Option<watch::Receiver<profiles::Routes>>;
-    type Error = S::Error;
-    type Future = ProfileFuture<S::Future, S>;
+    type Response = Option<Receiver>;
+    type Error = grpc::Status;
+    type Future = ProfileFuture<S>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.service.poll_ready()
@@ -99,38 +112,64 @@ where
 
         debug!("watching routes");
         let request = api::GetDestination {
-            path: dst.into_string(),
+            path: dst.to_string(),
             context_token: self.context_token.clone(),
             ..Default::default()
         };
-        let future = self.service.get(request.clone());
+        let future = self
+            .service
+            .get_profile(grpc::Request::new(request.clone()));
 
         ProfileFuture::Pending {
             future,
             service: self.service.clone(),
             backoff: self.backoff,
             request: request,
-        };
+        }
     }
 }
 
-pub enum ProfileFuture<S: GrpcService<BoxBody>> {
-    Skipped,
-    Pending {
-        future: S::Future,
-        backoff: Duration,
-        request: api::GetDestination,
-        service: api::client::Destination<S>,
-    },
-}
+impl<S> Future for ProfileFuture<S>
+where
+    S: GrpcService<BoxBody> + Clone + Send + 'static,
+    S::ResponseBody: Send,
+    <S::ResponseBody as Body>::Data: Send,
+    S::Future: Send,
+{
+    type Item = Option<Receiver>;
+    type Error = grpc::Status;
 
-impl<F> Future for ProfileFuture<F> {
-    type Item = F::Item;
-    type Error = F::Error;
-
-    fn poll(&mut self) -> Poll<F::Item, F::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self {
-            ProfileFuture::Pending { future } => future,
+            ProfileFuture::Skipped => Ok(None.into()),
+            ProfileFuture::Pending {
+                future,
+                service,
+                request,
+                backoff,
+            } => {
+                let response = match future.poll() {
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Err(status) => {
+                        if status.code() == grpc::Code::InvalidArgument {
+                            return Ok(None.into());
+                        } else {
+                            return Err(status);
+                        }
+                    }
+                    Ok(Async::Ready(rsp)) => rsp,
+                };
+                let (tx, rx) = watch::channel(profiles::Routes::default());
+                let daemon = Daemon {
+                    tx,
+                    backoff: *backoff,
+                    service: service.clone(),
+                    request: request.clone(),
+                    state: State::Streaming(response.into_inner()),
+                };
+                tokio::spawn(daemon.in_current_span().map_err(|n| match n {}));
+                Ok(Some(rx).into())
+            }
         }
     }
 }
@@ -160,23 +199,15 @@ where
     fn proxy_stream(
         rx: &mut grpc::Streaming<api::DestinationProfile, T::ResponseBody>,
         tx: &mut watch::Sender<profiles::Routes>,
-        hangup: &mut oneshot::Receiver<Never>,
     ) -> Async<StreamState> {
         loop {
+            match tx.poll_close() {
+                Ok(Async::Ready(())) | Err(()) => return StreamState::SendLost.into(),
+                Ok(Async::NotReady) => {}
+            }
+
             match rx.poll() {
-                Ok(Async::NotReady) => match hangup.poll() {
-                    Ok(Async::Ready(never)) => match never {}, // unreachable!
-                    Ok(Async::NotReady) => {
-                        // We are now scheduled to be notified if the hangup tx
-                        // is dropped.
-                        return Async::NotReady;
-                    }
-                    Err(_) => {
-                        // Hangup tx has been dropped.
-                        debug!("profile stream cancelled");
-                        return StreamState::SendLost.into();
-                    }
-                },
+                Ok(Async::NotReady) => return Async::NotReady,
                 Ok(Async::Ready(None)) => return StreamState::RecvDone.into(),
                 Ok(Async::Ready(Some(proto))) => {
                     debug!("profile received: {:?}", proto);
@@ -244,15 +275,13 @@ where
                         State::Backoff(Delay::new(clock::now() + self.backoff))
                     }
                 },
-                State::Streaming(ref mut s) => {
-                    match Self::proxy_stream(s, &mut self.tx, &mut self.hangup) {
-                        Async::NotReady => return Ok(Async::NotReady),
-                        Async::Ready(StreamState::SendLost) => return Ok(().into()),
-                        Async::Ready(StreamState::RecvDone) => {
-                            State::Backoff(Delay::new(clock::now() + self.backoff))
-                        }
+                State::Streaming(ref mut s) => match Self::proxy_stream(s, &mut self.tx) {
+                    Async::NotReady => return Ok(Async::NotReady),
+                    Async::Ready(StreamState::SendLost) => return Ok(().into()),
+                    Async::Ready(StreamState::RecvDone) => {
+                        State::Backoff(Delay::new(clock::now() + self.backoff))
                     }
-                }
+                },
                 State::Backoff(ref mut f) => match f.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Err(_) | Ok(Async::Ready(())) => State::Disconnected,
