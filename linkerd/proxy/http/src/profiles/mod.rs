@@ -31,13 +31,16 @@ pub struct Routes {
     pub dst_overrides: Vec<WeightedAddr>,
 }
 
+pub type Receiver = watch::Receiver<Routes>;
+pub type Sender = watch::Sender<Routes>;
+
 /// Watches a destination's Routes.
 ///
 /// The stream updates with all routes for the given destination. The stream
 /// never ends and cannot fail.
 pub trait GetRoutes<T> {
     type Error: Into<Error>;
-    type Future: Future<Item = Option<watch::Receiver<Routes>>, Error = Self::Error>;
+    type Future: Future<Item = Option<Receiver>, Error = Self::Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error>;
 

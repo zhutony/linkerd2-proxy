@@ -38,7 +38,7 @@ type Stealer<Req> = Weak<Mutex<Option<Req>>>;
 pub struct Enqueue<S, D, Req>
 where
     S: svc::Service<Req>,
-    S::Error: Into<Error>,
+    Dequeue<S>: svc::Service<Stealer<Req>>,
 {
     deadline: D,
     inner: buffer::Buffer<Dequeue<S>, Stealer<Req>>,

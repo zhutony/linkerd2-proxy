@@ -24,7 +24,7 @@ pub struct Target {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Profile(Option<NameAddr>);
+pub struct Profile(Addr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Endpoint {
@@ -77,9 +77,31 @@ impl tls::HasPeerIdentity for Endpoint {
 
 // === impl Profile ===
 
+impl From<Target> for Profile {
+    fn from(t: Target) -> Self {
+        Profile(
+            t.dst_name
+                .map(|d| d.into())
+                .unwrap_or_else(|| t.addr.into()),
+        )
+    }
+}
+
 impl profiles::CanGetDestination for Profile {
-    fn get_destination(&self) -> Option<&NameAddr> {
-        self.0.as_ref()
+    fn get_destination(&self) -> Addr {
+        self.0.clone()
+    }
+}
+
+impl profiles::WithRoute for Profile {
+    type Route = dst::Route;
+
+    fn with_route(self, route: profiles::Route) -> Self::Route {
+        dst::Route {
+            route,
+            target: self.0.clone(),
+            direction: metric_labels::Direction::In,
+        }
     }
 }
 
@@ -106,29 +128,6 @@ impl Into<metric_labels::EndpointLabels> for Target {
             tls_id: self.tls_client_id.map(metric_labels::TlsId::ClientId),
             labels: None,
         }
-    }
-}
-
-impl profiles::WithRoute for Target {
-    type Route = dst::Route;
-
-    fn with_route(self, route: profiles::Route) -> Self::Route {
-        dst::Route {
-            route,
-            target: self
-                .dst_name
-                .clone()
-                .map(Into::into)
-                .unwrap_or_else(|| Addr::Socket(self.addr)),
-            direction: metric_labels::Direction::In,
-        }
-    }
-}
-
-impl profiles::WithAddr for Target {
-    fn with_addr(mut self, addr: NameAddr) -> Self {
-        self.target = addr.into();
-        self
     }
 }
 

@@ -113,6 +113,12 @@ impl fmt::Display for Addr {
     }
 }
 
+impl From<SocketAddr> for Addr {
+    fn from(sa: SocketAddr) -> Self {
+        Addr::Socket(sa)
+    }
+}
+
 impl From<NameAddr> for Addr {
     fn from(na: NameAddr) -> Self {
         Addr::Name(na)

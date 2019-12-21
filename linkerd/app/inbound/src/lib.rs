@@ -3,9 +3,10 @@
 //! The inbound proxy is responsible for terminating traffic from other network
 //! endpoints inbound to the local application.
 
-#![deny(warnings, rust_2018_idioms)]
+//#![deny(warnings, rust_2018_idioms)]
+#![allow(warnings, rust_2018_idioms)]
 
-pub use self::endpoint::{Endpoint, RecognizeTarget, Target};
+pub use self::endpoint::{Endpoint, Profile, RecognizeTarget, Target};
 use futures::future;
 use linkerd2_app_core::{
     self as core, cache, classify,
@@ -131,7 +132,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
                 ))
-                .push(profiles::Layer::without_split(
+                .push(profiles::Layer::without_overrides(
                     profiles_client,
                     svc::stack(())
                         .makes::<dst::Route>()
@@ -141,16 +142,19 @@ impl<A: OrigDstAddr> Config<A> {
                         .makes::<dst::Route>()
                         .push(classify::layer())
                         .push(insert::target::layer())
+                        .makes::<dst::Route>()
                         .into_inner(),
                 ))
+                .serves::<Profile>()
                 .push_pending()
+                .makes::<Profile>()
                 .push_buffer(2, DispatchDeadline::extract)
+                .makes_clone::<Profile>()
                 .push(cache::Layer::new(router_capacity, router_max_idle_age))
-                .serves::<Target>()
                 .into_inner()
                 .spawn();
 
-            let target_stack = svc::stack(profile_cache).push(router::Layer::new(ProfileKey::from));
+            let target_stack = svc::stack(profile_cache).push(router::Layer::new(Profile::from));
 
             let source_stack = target_stack
                 .push(router::Layer::new(RecognizeTarget::new))

@@ -2,7 +2,7 @@ use crate::dns;
 use crate::proxy::http::{profiles, retry::Budget};
 use futures::{Async, Future, Poll, Stream};
 use http;
-use linkerd2_addr::NameAddr;
+use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_error::Never;
 use linkerd2_proxy_api::destination as api;
 use regex::Regex;
@@ -89,7 +89,7 @@ where
     }
 }
 
-impl<S> tower::Service<NameAddr> for Client<S>
+impl<S> tower::Service<Addr> for Client<S>
 where
     S: GrpcService<BoxBody> + Clone + Send + 'static,
     S::ResponseBody: Send,
@@ -104,27 +104,32 @@ where
         self.service.poll_ready()
     }
 
-    fn call(&mut self, dst: NameAddr) -> Self::Future {
+    fn call(&mut self, dst: Addr) -> Self::Future {
+        let dst = match dst {
+            Addr::Name(n) => n,
+            Addr::Socket(_) => return ProfileFuture::Skipped,
+        };
         if !self.suffixes.iter().any(|s| s.contains(dst.name())) {
             debug!("name not in profile suffixes");
             return ProfileFuture::Skipped;
         }
 
-        debug!("watching routes");
         let request = api::GetDestination {
             path: dst.to_string(),
             context_token: self.context_token.clone(),
             ..Default::default()
         };
+
+        debug!("watching routes");
         let future = self
             .service
             .get_profile(grpc::Request::new(request.clone()));
 
         ProfileFuture::Pending {
             future,
+            request,
             service: self.service.clone(),
             backoff: self.backoff,
-            request: request,
         }
     }
 }
