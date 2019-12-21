@@ -1,79 +1,73 @@
 use indexmap::IndexMap;
 use linkerd2_app_core::{
-    dst::{DstAddr, Route},
+    dst::Route,
     metric_labels::{prefix_labels, EndpointLabels},
     proxy::{
         api_resolve::{Metadata, ProtocolHint},
-        http::{identity_from_header, settings},
+        http::{self, identity_from_header},
         identity,
         resolve::map_endpoint::MapEndpoint,
         tap,
     },
+    router,
     transport::{connect, tls},
-    Conditional, NameAddr, L5D_REQUIRE_ID,
+    Addr, Conditional, NameAddr, L5D_REQUIRE_ID,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Endpoint {
-    pub dst_logical: Option<NameAddr>,
-    pub dst_concrete: Option<NameAddr>,
-    pub addr: SocketAddr,
-    pub identity: tls::PeerIdentity,
-    pub metadata: Metadata,
-    pub http_settings: settings::Settings,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct FromMetadata;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Logical {
+    pub dst: Addr,
+    pub settings: http::Settings,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogicalTarget(tls::accept::Meta);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Profile(Addr);
+
+#[derive(Clone, Debug)]
+pub struct ProfileTarget;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Concrete {
+    pub dst: Addr,
+    pub logical: Logical,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Endpoint {
+    pub addr: SocketAddr,
+    pub identity: tls::PeerIdentity,
+    pub concrete: Concrete,
+    pub metadata: Metadata,
+}
+
 impl Endpoint {
     pub fn can_use_orig_proto(&self) -> bool {
-        match self.metadata.protocol_hint() {
-            ProtocolHint::Unknown => return false,
-            ProtocolHint::Http2 => (),
+        if let ProtocolHint::Unknown = self.metadata.protocol_hint() {
+            return false;
         }
 
-        match self.http_settings {
-            settings::Settings::Http2 => false,
-            settings::Settings::Http1 {
+        match self.concrete.logical.settings {
+            http::Settings::Http2 => false,
+            http::Settings::Http1 {
                 keep_alive: _,
                 wants_h1_upgrade,
                 was_absolute_form: _,
             } => !wants_h1_upgrade,
-            settings::Settings::NotHttp => {
+            http::Settings::NotHttp => {
                 unreachable!(
                     "Endpoint::can_use_orig_proto called when NotHttp: {:?}",
                     self,
                 );
             }
         }
-    }
-
-    pub fn from_request<B>(req: &http::Request<B>) -> Option<Self> {
-        let addr = req
-            .extensions()
-            .get::<tls::accept::Meta>()?
-            .addrs
-            .target_addr_if_not_local()?;
-
-        let http_settings = settings::Settings::from_request(req);
-        let identity = match identity_from_header(req, L5D_REQUIRE_ID) {
-            Some(require_id) => Conditional::Some(require_id),
-            None => {
-                Conditional::None(tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into())
-            }
-        };
-
-        Some(Self {
-            addr,
-            dst_logical: None,
-            dst_concrete: None,
-            identity,
-            metadata: Metadata::empty(),
-            http_settings,
-        })
     }
 }
 
@@ -85,7 +79,7 @@ impl From<SocketAddr> for Endpoint {
             dst_concrete: None,
             identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
             metadata: Metadata::empty(),
-            http_settings: settings::Settings::NotHttp,
+            http_settings: http::Settings::NotHttp,
         }
     }
 }
@@ -119,9 +113,9 @@ impl connect::HasPeerAddr for Endpoint {
     }
 }
 
-impl settings::HasSettings for Endpoint {
-    fn http_settings(&self) -> &settings::Settings {
-        &self.http_settings
+impl http::settings::HasSettings for Endpoint {
+    fn http_settings(&self) -> &http::Settings {
+        &self.concrete.logical.settings
     }
 }
 
@@ -163,10 +157,10 @@ impl tap::Inspect for Endpoint {
     }
 }
 
-impl MapEndpoint<DstAddr, Metadata> for FromMetadata {
+impl MapEndpoint<Concrete, Metadata> for FromMetadata {
     type Out = Endpoint;
 
-    fn map_endpoint(&self, target: &DstAddr, addr: SocketAddr, metadata: Metadata) -> Endpoint {
+    fn map_endpoint(&self, concrete: &Concrete, addr: SocketAddr, metadata: Metadata) -> Endpoint {
         let identity = metadata
             .identity()
             .cloned()
@@ -178,9 +172,7 @@ impl MapEndpoint<DstAddr, Metadata> for FromMetadata {
             addr,
             identity,
             metadata,
-            dst_logical: target.dst_logical().name_addr().cloned(),
-            dst_concrete: target.dst_concrete().name_addr().cloned(),
-            http_settings: target.http_settings.clone(),
+            concrete: concrete.clone(),
         }
     }
 }
@@ -195,5 +187,45 @@ impl Into<EndpointLabels> for Endpoint {
             tls_id: self.identity.as_ref().map(|id| TlsId::ServerId(id.clone())),
             labels: prefix_labels("dst", self.metadata.labels().into_iter()),
         }
+    }
+}
+
+// === impl LogicalTarget ===
+
+impl From<tls::accept::Meta> for LogicalTarget {
+    fn from(accept: tls::accept::Meta) -> Self {
+        LogicalTarget(accept)
+    }
+}
+
+impl<B> router::Target<http::Request<B>> for LogicalTarget {
+    type Target = Logical;
+
+    fn target(&self, req: &http::Request<B>) -> Self::Target {
+        use linkerd2_app_core::{
+            http_request_authority_addr, http_request_host_addr, http_request_l5d_override_dst_addr,
+        };
+        let dst = http_request_l5d_override_dst_addr(req)
+            .map(|override_addr| {
+                tracing::debug!("using dst-override");
+                override_addr
+            })
+            .or_else(|_| http_request_authority_addr(req))
+            .or_else(|_| http_request_host_addr(req))
+            .unwrap_or_else(|| self.0.addrs.target_addr());
+
+        let settings = http::Settings::from_request(req);
+
+        Logical { dst, settings }
+    }
+}
+
+// === impl ProfileTarget ===
+
+impl router::Target<Logical> for ProfileTarget {
+    type Target = Profile;
+
+    fn target(&self, t: Logical) -> Self::Target {
+        Profile(t.dst)
     }
 }
