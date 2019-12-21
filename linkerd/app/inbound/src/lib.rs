@@ -6,7 +6,7 @@
 //#![deny(warnings, rust_2018_idioms)]
 #![allow(warnings, rust_2018_idioms)]
 
-pub use self::endpoint::{Endpoint, Profile, RecognizeTarget, Target};
+pub use self::endpoint::{Endpoint, Profile, ProfileTarget, RequestTarget, Target};
 use futures::future;
 use linkerd2_app_core::{
     self as core, cache, classify,
@@ -22,7 +22,8 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc, trace, trace_context,
+    svc::{self, Make},
+    trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     DispatchDeadline, Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP,
     L5D_SERVER_ID,
@@ -110,8 +111,10 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
+                .serves::<Endpoint>()
                 .push_pending()
                 .push_buffer(2, DispatchDeadline::extract)
+                .makes_clone::<Endpoint>()
                 .spawn_cache(router_capacity, router_max_idle_age);
 
             // TODO around everything...
@@ -120,6 +123,8 @@ impl<A: OrigDstAddr> Config<A> {
             //     .push_load_shed()
             //     .into_inner();
 
+            // Determine the target for each request, obtain a profile route for
+            // that target, and dispatch the request to it.
             let profile_cache = svc::stack(endpoint_cache)
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
@@ -149,13 +154,17 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_buffer(2, ())
                 .makes_clone::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
-                .push(router::Layer::new(Profile::from));
+                .serves::<Profile>()
+                .push_pending()
+                .push(router::Layer::new(|()| ProfileTarget))
+                .make(());
 
+            // Determine the target for each request, obtain a profile route for
+            // that target, and dispatch the request to it.
             let source_stack = svc::stack(profile_cache)
-                // Determine the target for each request, obtain a service for
-                // that target, and dispatch the request to that service.
-                .push(router::Layer::new(RecognizeTarget::new))
-                .makes::<tls::accept::Meta>()
+                .serves::<Target>()
+                .push_pending()
+                .push(router::Layer::new(RequestTarget::from))
                 .into_inner();
 
             let forward_tcp = tcp::Forward::new(

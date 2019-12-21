@@ -33,9 +33,12 @@ pub struct Endpoint {
 }
 
 #[derive(Clone, Debug)]
-pub struct RecognizeTarget {
+pub struct RequestTarget {
     accept: tls::accept::Meta,
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct ProfileTarget;
 
 // === impl Endpoint ===
 
@@ -81,8 +84,9 @@ impl From<Target> for Profile {
     fn from(t: Target) -> Self {
         Profile(
             t.dst_name
+                .clone()
                 .map(|d| d.into())
-                .unwrap_or_else(|| t.addr.into()),
+                .unwrap_or_else(|| t.addr.clone().into()),
         )
     }
 }
@@ -188,15 +192,15 @@ impl fmt::Display for Target {
     }
 }
 
-// === impl RecognizeTarget ===
+// === impl RequestTarget ===
 
-impl RecognizeTarget {
-    pub fn new(accept: tls::accept::Meta) -> Self {
+impl From<tls::accept::Meta> for RequestTarget {
+    fn from(accept: tls::accept::Meta) -> Self {
         Self { accept }
     }
 }
 
-impl<A> router::Target<http::Request<A>> for RecognizeTarget {
+impl<A> router::Target<http::Request<A>> for RequestTarget {
     type Target = Target;
 
     fn target(&self, req: &http::Request<A>) -> Self::Target {
@@ -222,8 +226,7 @@ impl<A> router::Target<http::Request<A>> for RecognizeTarget {
             .or_else(|| http_request_authority_addr(req).ok())
             .or_else(|| http_request_host_addr(req).ok())
             .or_else(|| http_request_orig_dst_addr(req).ok())
-            .and_then(|a| a.name_addr())
-            .cloned();
+            .and_then(|a| a.name_addr().cloned());
 
         Target {
             dst_name,
@@ -231,5 +234,20 @@ impl<A> router::Target<http::Request<A>> for RecognizeTarget {
             tls_client_id: self.accept.peer_identity.clone(),
             http_settings: http::Settings::from_request(req),
         }
+    }
+}
+
+// === impl ProfileTarget ===
+
+impl router::Target<Target> for ProfileTarget {
+    type Target = Profile;
+
+    fn target(&self, t: &Target) -> Self::Target {
+        Profile(
+            t.dst_name
+                .clone()
+                .map(Into::into)
+                .unwrap_or_else(|| t.addr.into()),
+        )
     }
 }

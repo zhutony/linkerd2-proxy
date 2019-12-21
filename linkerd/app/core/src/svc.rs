@@ -94,20 +94,15 @@ impl<S> Stack<S> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_pending<T>(self) -> Stack<pending::MakePending<S>>
-    where
-        S: Service<T>,
-    {
+    pub fn push_pending(self) -> Stack<pending::MakePending<S>> {
         self.push(pending::layer())
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer<T, D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
+    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
     where
-        S: Make<T>,
         D: buffer::Deadline<Req>,
         Req: Send + 'static,
-        buffer::Make<S, D, Req>: Make<T>,
     {
         self.push(buffer::layer(bound, d))
     }

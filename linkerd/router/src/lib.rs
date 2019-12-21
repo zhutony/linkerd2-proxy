@@ -74,12 +74,12 @@ where
     }
 }
 
-impl<Req, T, F> Target<Req> for F
+impl<Req, K, F> Target<Req> for F
 where
-    F: Fn(&Req) -> T,
-    T: Clone + Eq + Hash,
+    F: Fn(&Req) -> K,
+    K: Clone + Eq + Hash,
 {
-    type Target = T;
+    type Target = K;
 
     fn target(&self, req: &Req) -> Self::Target {
         (self)(req)
