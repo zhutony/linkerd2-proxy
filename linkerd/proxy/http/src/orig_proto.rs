@@ -22,10 +22,7 @@ pub struct Downgrade<S> {
 // ==== impl Upgrade =====
 
 impl<S> Upgrade<S> {
-    pub fn new<A, B>(inner: S) -> Self
-    where
-        S: tower::Service<http::Request<A>, Response = http::Response<B>>,
-    {
+    pub fn new(inner: S) -> Self {
         Self { inner }
     }
 }

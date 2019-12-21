@@ -15,7 +15,10 @@ use linkerd2_app_core::{
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self,
-        http::{client, insert, metrics as http_metrics, normalize_uri, profiles, strip_header},
+        http::{
+            client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
+            strip_header,
+        },
         identity,
         server::{Protocol as ServerProtocol, Server},
         tap, tcp,
@@ -35,7 +38,6 @@ use tower_grpc::{self as grpc, generic::client::GrpcService};
 use tracing::{info, info_span};
 
 mod endpoint;
-mod orig_proto_downgrade;
 #[allow(dead_code)] // TODO #2597
 mod set_client_id_on_req;
 #[allow(dead_code)] // TODO #2597
@@ -113,8 +115,7 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .serves::<Endpoint>()
                 .push_pending()
-                .push_buffer(2, DispatchDeadline::extract)
-                .makes_clone::<Endpoint>()
+                .push_wrap(svc::layers().push_lock())
                 .spawn_cache(router_capacity, router_max_idle_age);
 
             // Determine the target for each request, obtain a profile route for
@@ -122,9 +123,11 @@ impl<A: OrigDstAddr> Config<A> {
             let profile_cache = svc::stack(endpoint_cache)
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
-                .push(trace_context::layer(span_sink.clone().map(|span_sink| {
-                    SpanConverter::client(span_sink, trace_labels())
-                })))
+                .push_wrap(trace_context::layer(
+                    span_sink
+                        .clone()
+                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
+                ))
                 .push(normalize_uri::layer())
                 .push(tap_layer)
                 .push(http_metrics::layer::<_, classify::Response>(
@@ -143,7 +146,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .into_inner(),
                 ))
                 .push_pending()
-                .push_buffer(2, ())
+                .push_wrap(svc::layers().push_lock())
                 .makes_clone::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Profile>()
@@ -156,21 +159,21 @@ impl<A: OrigDstAddr> Config<A> {
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_pending()
-                .push(strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push_wrap(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
-                .push(orig_proto_downgrade::layer())
-                .push(insert::target::layer())
-                // disabled due to information leagkage
-                //.push(set_remote_ip_on_req::layer())
-                //.push(set_client_id_on_req::layer())
-                .push(strip_header::request::layer(L5D_REMOTE_IP))
-                .push(strip_header::request::layer(L5D_CLIENT_ID))
-                .push(strip_header::response::layer(L5D_SERVER_ID))
-                .push(insert::layer(move || {
-                    DispatchDeadline::after(buffer.dispatch_timeout)
-                }))
-                .push(errors::layer())
+                .push_wrap(
+                    svc::layers()
+                        .push(svc::layer::mk(orig_proto::Downgrade::new))
+                        .push(strip_header::request::layer(L5D_REMOTE_IP))
+                        .push(strip_header::request::layer(L5D_CLIENT_ID))
+                        .push(strip_header::response::layer(L5D_SERVER_ID))
+                        .push(errors::layer())
+                        .push(trace_context::layer(span_sink.map(|span_sink| {
+                            SpanConverter::server(span_sink, trace_labels())
+                        })))
+                        .push(metrics.http_handle_time.layer()),
+                )
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",
@@ -178,10 +181,6 @@ impl<A: OrigDstAddr> Config<A> {
                         target.addr = %src.addrs.target_addr(),
                     )
                 }))
-                .push(trace_context::layer(span_sink.map(|span_sink| {
-                    SpanConverter::server(span_sink, trace_labels())
-                })))
-                .push(metrics.http_handle_time.layer())
                 .into_inner();
 
             // TODO around everything...

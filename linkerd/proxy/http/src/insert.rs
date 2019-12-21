@@ -1,6 +1,6 @@
 use futures::{try_ready, Future, Poll};
 use http;
-use linkerd2_stack::{layer, Make, Proxy};
+use linkerd2_stack::{layer, Proxy};
 use std::marker::PhantomData;
 
 pub trait Lazy<V>: Clone {
@@ -11,19 +11,6 @@ pub trait Lazy<V>: Clone {
 /// each request's extensions.
 #[derive(Clone, Debug)]
 pub struct Layer<L, V> {
-    lazy: L,
-    _marker: PhantomData<fn() -> V>,
-}
-
-#[derive(Clone)]
-pub struct MakeInsert<M, L, V> {
-    inner: M,
-    lazy: L,
-    _marker: PhantomData<fn() -> V>,
-}
-
-pub struct MakeFuture<F, L, V> {
-    inner: F,
     lazy: L,
     _marker: PhantomData<fn() -> V>,
 }
@@ -63,75 +50,15 @@ where
     }
 }
 
-impl<M, L, V> layer::Layer<M> for Layer<L, V>
+impl<S, L, V> layer::Layer<S> for Layer<L, V>
 where
     L: Lazy<V>,
     V: Send + Sync + 'static,
 {
-    type Service = MakeInsert<M, L, V>;
+    type Service = Insert<S, L, V>;
 
-    fn layer(&self, inner: M) -> Self::Service {
-        Self::Service {
-            inner,
-            lazy: self.lazy.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-// === impl Make ===
-
-impl<T, M, L, V> Make<T> for MakeInsert<M, L, V>
-where
-    M: Make<T>,
-    L: Lazy<V>,
-    V: Send + Sync + 'static,
-{
-    type Service = Insert<M::Service, L, V>;
-
-    fn make(&self, t: T) -> Self::Service {
-        Insert::new(self.inner.make(t), self.lazy.clone())
-    }
-}
-
-impl<T, M, L, V> tower::Service<T> for MakeInsert<M, L, V>
-where
-    M: tower::Service<T>,
-    L: Lazy<V>,
-    V: Send + Sync + 'static,
-{
-    type Response = Insert<M::Response, L, V>;
-    type Error = M::Error;
-    type Future = MakeFuture<M::Future, L, V>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, t: T) -> Self::Future {
-        Self::Future {
-            inner: self.inner.call(t),
-            lazy: self.lazy.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-// === impl MakeFuture ===
-
-impl<F, L, V> Future for MakeFuture<F, L, V>
-where
-    F: Future,
-    L: Lazy<V>,
-    V: Send + Sync + 'static,
-{
-    type Item = Insert<F::Item, L, V>;
-    type Error = F::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = try_ready!(self.inner.poll());
-        let svc = Insert::new(inner, self.lazy.clone());
-        Ok(svc.into())
+    fn layer(&self, inner: S) -> Self::Service {
+        Insert::new(inner, self.lazy.clone())
     }
 }
 

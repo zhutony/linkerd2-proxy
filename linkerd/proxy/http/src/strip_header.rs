@@ -1,28 +1,9 @@
-use futures::{try_ready, Future, Poll};
 use http::header::AsHeaderName;
-use linkerd2_stack::Make;
 use std::marker::PhantomData;
 
-/// Wraps HTTP `Service` `Stack<T>`s so that a given header is removed from a
-/// request or response.
 #[derive(Clone, Debug)]
 pub struct Layer<H, R> {
     header: H,
-    _marker: PhantomData<fn(R)>,
-}
-
-/// Wraps an HTTP `Service` so that a given header is removed from each
-/// request or response.
-#[derive(Clone, Debug)]
-pub struct Stack<H, M, R> {
-    header: H,
-    inner: M,
-    _marker: PhantomData<fn(R)>,
-}
-
-pub struct MakeFuture<H, F, R> {
-    header: H,
-    inner: F,
     _marker: PhantomData<fn(R)>,
 }
 
@@ -47,83 +28,18 @@ where
     }
 }
 
-impl<H, M, R> tower::layer::Layer<M> for Layer<H, R>
+impl<H, S, R> tower::layer::Layer<S> for Layer<H, R>
 where
     H: AsHeaderName + Clone,
 {
-    type Service = Stack<H, M, R>;
+    type Service = Service<H, S, R>;
 
-    fn layer(&self, inner: M) -> Self::Service {
-        Stack {
+    fn layer(&self, inner: S) -> Self::Service {
+        Self::Service {
             header: self.header.clone(),
             inner,
             _marker: PhantomData,
         }
-    }
-}
-
-// === impl Stack ===
-
-impl<H, T, M, R> Make<T> for Stack<H, M, R>
-where
-    H: AsHeaderName + Clone,
-    M: Make<T>,
-{
-    type Service = Service<H, M::Service, R>;
-
-    fn make(&self, t: T) -> Self::Service {
-        let inner = self.inner.make(t);
-        let header = self.header.clone();
-        Service {
-            header,
-            inner,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<H, T, M, R> tower::Service<T> for Stack<H, M, R>
-where
-    H: AsHeaderName + Clone,
-    M: tower::Service<T>,
-{
-    type Response = Service<H, M::Response, R>;
-    type Error = M::Error;
-    type Future = MakeFuture<H, M::Future, R>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, t: T) -> Self::Future {
-        let inner = self.inner.call(t);
-        let header = self.header.clone();
-        MakeFuture {
-            header,
-            inner,
-            _marker: PhantomData,
-        }
-    }
-}
-
-// === impl MakeFuture ===
-
-impl<H, F, R> Future for MakeFuture<H, F, R>
-where
-    H: Clone,
-    F: Future,
-{
-    type Item = Service<H, F::Item, R>;
-    type Error = F::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = try_ready!(self.inner.poll());
-        Ok(Service {
-            header: self.header.clone(),
-            inner,
-            _marker: PhantomData,
-        }
-        .into())
     }
 }
 

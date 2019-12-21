@@ -35,38 +35,11 @@ pub struct StatusError {
     pub message: String,
 }
 
-impl<M> svc::Layer<M> for Layer {
-    type Service = Stack<M>;
+impl<S> svc::Layer<S> for Layer {
+    type Service = Service<S>;
 
-    fn layer(&self, inner: M) -> Self::Service {
-        Stack { inner }
-    }
-}
-
-impl<T, M> svc::Make<T> for Stack<M>
-where
-    M: svc::Make<T>,
-{
-    type Service = Service<M::Service>;
-
-    fn make(&self, target: T) -> Self::Service {
-        Service(self.inner.make(target))
-    }
-}
-
-impl<T, M> svc::Service<T> for Stack<M>
-where
-    M: svc::Service<T>,
-{
-    type Response = Service<M::Response>;
-    type Error = M::Error;
-    type Future = futures::future::Map<M::Future, fn(M::Response) -> Self::Response>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-    fn call(&mut self, target: T) -> Self::Future {
-        self.inner.call(target).map(Service)
+    fn layer(&self, inner: S) -> Self::Service {
+        Service(inner)
     }
 }
 

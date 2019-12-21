@@ -1,6 +1,5 @@
 use super::{propagation, Span, SpanSink};
 use futures::{try_ready, Async, Future, Poll};
-use linkerd2_stack::Make;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::{trace, warn};
@@ -12,17 +11,6 @@ pub struct ResponseFuture<F, S> {
 
 #[derive(Clone, Debug)]
 pub struct Layer<S> {
-    sink: Option<S>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Stack<M, S> {
-    inner: M,
-    sink: Option<S>,
-}
-
-pub struct MakeFuture<F, S> {
-    inner: F,
     sink: Option<S>,
 }
 
@@ -47,72 +35,17 @@ pub fn layer<S>(sink: Option<S>) -> Layer<S> {
 
 // === impl Layer ===
 
-impl<M, S> tower::layer::Layer<M> for Layer<S>
+impl<Svc, S> tower::layer::Layer<Svc> for Layer<S>
 where
     S: Clone,
 {
-    type Service = Stack<M, S>;
+    type Service = Service<Svc, S>;
 
-    fn layer(&self, inner: M) -> Self::Service {
-        Stack {
+    fn layer(&self, inner: Svc) -> Self::Service {
+        Self::Service {
             inner,
             sink: self.sink.clone(),
         }
-    }
-}
-
-// === impl Stack ===
-
-impl<T, M, S> Make<T> for Stack<M, S>
-where
-    M: Make<T>,
-    S: Clone,
-{
-    type Service = Service<M::Service, S>;
-
-    fn make(&self, target: T) -> Self::Service {
-        let inner = self.inner.make(target);
-
-        Service {
-            inner,
-            sink: self.sink.clone(),
-        }
-    }
-}
-
-impl<T, M, S> tower::Service<T> for Stack<M, S>
-where
-    M: tower::Service<T>,
-    S: Clone,
-{
-    type Response = Service<M::Response, S>;
-    type Error = M::Error;
-    type Future = MakeFuture<M::Future, S>;
-
-    fn poll_ready(&mut self) -> Poll<(), M::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, target: T) -> Self::Future {
-        let inner = self.inner.call(target);
-
-        MakeFuture {
-            inner,
-            sink: self.sink.clone(),
-        }
-    }
-}
-
-// === impl MakeFuture ===
-
-impl<F: Future, S> Future for MakeFuture<F, S> {
-    type Item = Service<F::Item, S>;
-    type Error = F::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = try_ready!(self.inner.poll());
-        let sink = self.sink.take();
-        Ok(Async::Ready(Service { inner, sink }))
     }
 }
 

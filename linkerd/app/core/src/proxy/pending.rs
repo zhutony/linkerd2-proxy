@@ -18,8 +18,6 @@ pub enum Pending<F, S> {
     Made(S),
 }
 
-pub type Svc<M, T> = Pending<svc::Oneshot<M, T>, <M as svc::Service<T>>::Response>;
-
 pub fn layer() -> Layer {
     Layer(())
 }
@@ -40,7 +38,7 @@ impl<T, M> Make<T> for MakePending<M>
 where
     M: svc::Service<T> + Clone,
 {
-    type Service = Svc<M, T>;
+    type Service = Pending<svc::Oneshot<M, T>, <M as svc::Service<T>>::Response>;
 
     fn make(&self, target: T) -> Self::Service {
         let fut = self.inner.clone().oneshot(target);

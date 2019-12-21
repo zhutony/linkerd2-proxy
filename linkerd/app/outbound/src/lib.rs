@@ -125,19 +125,24 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push(trace_context::layer(span_sink.clone().map(|span_sink| {
-                    SpanConverter::client(span_sink, trace_labels())
-                })))
+                .push_wrap(trace_context::layer(
+                    span_sink
+                        .clone()
+                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
+                ))
                 .push(http::normalize_uri::layer())
                 .serves::<Endpoint>();
 
             let endpoint_stack = client_stack
-                .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                // disabled due to information leagkage
-                //.push(add_remote_ip_on_rsp::layer())
-                //.push(add_server_id_on_rsp::layer())
+                .push_wrap(
+                    svc::layers()
+                        .push(http::strip_header::response::layer(L5D_REMOTE_IP))
+                    .push(http::strip_header::response::layer(L5D_SERVER_ID))
+                    .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
+                    // disabled due to information leagkage
+                    //.push(add_remote_ip_on_rsp::layer())
+                    //.push(add_server_id_on_rsp::layer())
+                )
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -163,21 +168,18 @@ impl<A: OrigDstAddr> Config<A> {
                     router_max_idle_age,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
-                .push(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
-                .push(trace::layer(|_: &Concrete| info_span!("balance")))
+                .push_wrap(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
                 ))
                 .serves::<Concrete>()
                 .push_pending()
-                .push_buffer(10, DispatchDeadline::extract)
+                .push_wrap(svc::layers().push_lock())
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
             let profile_cache = balancer_cache
-                .push_pending()
-                .push_buffer(00, DispatchDeadline::extract)
-                .makes_clone::<Concrete>()
+                .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
                     svc::stack(())
@@ -198,6 +200,9 @@ impl<A: OrigDstAddr> Config<A> {
                         ))
                         .into_inner(),
                 ))
+                .serves::<Profile>()
+                .push_pending()
+                .push_wrap(svc::layers().push_lock())
                 .makes::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .push(router::Layer::new(|()| ProfileTarget))
@@ -214,20 +219,27 @@ impl<A: OrigDstAddr> Config<A> {
                     canonicalize_timeout,
                 ))
                 .spawn_cache(router_capacity, router_max_idle_age)
-                .push(http::strip_header::request::layer(L5D_CLIENT_ID))
-                .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push_wrap(
+                    svc::layers()
+                        .push(http::strip_header::request::layer(L5D_CLIENT_ID))
+                        .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                )
                 .push(http::insert::target::layer())
-                .push(trace::layer(|logical: Logical| info_span!("logical", addr = %logical.dst)))
-                .push(router::Layer::new(LogicalTarget::from))
-                .push(http::insert::layer(move || {
-                    DispatchDeadline::after(buffer.dispatch_timeout)
-                }))
-                .push(http::insert::target::layer())
-                .push(errors::layer())
-                .push(trace_context::layer(span_sink.map(|span_sink| {
-                    SpanConverter::server(span_sink, trace_labels())
-                })))
-                .push(metrics.http_handle_time.layer())
+                .push(trace::layer(
+                    |logical: Logical| info_span!("logical", addr = %logical.dst),
+                ))
+                .push(router::Layer::new(LogicalTarget::from));
+
+            let server_stack = logical_cache
+                .push_wrap(
+                    svc::layers()
+                    .push(http::insert::target::layer())
+                    .push(errors::layer())
+                    .push(trace_context::layer(span_sink.map(|span_sink| {
+                        SpanConverter::server(span_sink, trace_labels())
+                    })))
+                    .push(metrics.http_handle_time.layer())
+                )
                 .push(trace::layer(
                     |src: &tls::accept::Meta| {
                         info_span!("source", target.addr = %src.addrs.target_addr())

@@ -142,6 +142,37 @@ where
     }
 }
 
+impl<T, G, R, C> tower::Service<T> for MakeSvc<G, R, C, SmallRng>
+where
+    T: WithRoute + Clone,
+    G: GetRoutes<T>,
+    R: Make<T::Route> + Clone,
+    C: Clone,
+{
+    type Response = Service<T, R, Override<C>>;
+    type Error = G::Error;
+    type Future = MakeFuture<T, G::Future, R, C, SmallRng>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        self.get_routes.poll_ready()
+    }
+
+    fn call(&mut self, target: T) -> Self::Future {
+        let future = self.get_routes.get_routes(target.clone());
+
+        MakeFuture {
+            future,
+            inner: Some(Inner {
+                target,
+                make_route: self.make_route.clone(),
+                default_route: self.default_route.clone(),
+                make_concrete: self.make_concrete.clone(),
+                dst_override: self.dst_override.clone(),
+            }),
+        }
+    }
+}
+
 impl<T, F, R, C> Future for MakeFuture<T, F, R, C, ()>
 where
     T: WithRoute + Clone,
@@ -170,37 +201,6 @@ where
         };
 
         Ok(svc.into())
-    }
-}
-
-impl<T, G, R, C> tower::Service<T> for MakeSvc<G, R, C, SmallRng>
-where
-    T: WithAddr + WithRoute + Clone,
-    G: GetRoutes<T>,
-    R: Make<T::Route> + Clone,
-    C: Clone,
-{
-    type Response = Service<T, R, Override<C>>;
-    type Error = G::Error;
-    type Future = MakeFuture<T, G::Future, R, C, SmallRng>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.get_routes.poll_ready()
-    }
-
-    fn call(&mut self, target: T) -> Self::Future {
-        let future = self.get_routes.get_routes(target.clone());
-
-        MakeFuture {
-            future,
-            inner: Some(Inner {
-                target,
-                make_route: self.make_route.clone(),
-                default_route: self.default_route.clone(),
-                make_concrete: self.make_concrete.clone(),
-                dst_override: self.dst_override.clone(),
-            }),
-        }
     }
 }
 

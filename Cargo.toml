@@ -18,6 +18,7 @@ members = [
     "linkerd/fallback",
     "linkerd/identity",
     "linkerd/io",
+    "linkerd/lock",
     "linkerd/metrics",
     "linkerd/opencensus",
     "linkerd/proxy/api-resolve",

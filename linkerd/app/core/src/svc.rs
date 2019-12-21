@@ -3,6 +3,7 @@
 
 use crate::proxy::{buffer, http, pending};
 use crate::{cache, Error};
+pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Make, Shared};
 pub use linkerd2_timeout::stack as timeout;
 use std::time::Duration;
@@ -54,6 +55,10 @@ impl<L> Layers<L> {
         self.push(SpawnReadyLayer::new())
     }
 
+    pub fn push_lock(self) -> Layers<Pair<L, lock::Layer>> {
+        self.push(lock::Layer)
+    }
+
     pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
     where
         A: 'static,
@@ -74,23 +79,6 @@ impl<M, L: Layer<M>> Layer<M> for Layers<L> {
 impl<S> Stack<S> {
     pub fn push<L: Layer<S>>(self, layer: L) -> Stack<L::Service> {
         Stack(layer.layer(self.0))
-    }
-
-    pub fn spawn_cache<T>(
-        self,
-        capacity: usize,
-        max_idle_age: Duration,
-    ) -> Stack<cache::Service<T, S>>
-    where
-        T: Clone + Eq + std::hash::Hash + Send + 'static,
-        S: Make<T> + Clone + Send + 'static,
-        S::Service: Clone + Send + 'static,
-    {
-        Stack(
-            cache::Layer::new(capacity, max_idle_age)
-                .layer(self.0)
-                .spawn(),
-        )
     }
 
     /// Buffer requests when when the next layer is out of capacity.
@@ -121,6 +109,27 @@ impl<S> Stack<S> {
 
     pub fn push_timeout(self, timeout: Duration) -> Stack<tower::timeout::Timeout<S>> {
         self.push(TimeoutLayer::new(timeout))
+    }
+
+    pub fn push_wrap<L: Clone>(self, layer: L) -> Stack<wrap::Wrap<L, S>> {
+        self.push(wrap::Layer(layer))
+    }
+
+    pub fn spawn_cache<T>(
+        self,
+        capacity: usize,
+        max_idle_age: Duration,
+    ) -> Stack<cache::Service<T, S>>
+    where
+        T: Clone + Eq + std::hash::Hash + Send + 'static,
+        S: Make<T> + Clone + Send + 'static,
+        S::Service: Clone + Send + 'static,
+    {
+        Stack(
+            cache::Layer::new(capacity, max_idle_age)
+                .layer(self.0)
+                .spawn(),
+        )
     }
 
     pub fn boxed<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
@@ -186,5 +195,77 @@ where
 
     fn call(&mut self, t: T) -> Self::Future {
         self.0.call(t)
+    }
+}
+
+pub mod wrap {
+    use super::{Make, Service};
+    use futures::{try_ready, Future, Poll};
+
+    #[derive(Clone, Debug)]
+    pub struct Layer<L>(pub(super) L);
+
+    #[derive(Clone, Debug)]
+    pub struct Wrap<L, M> {
+        layer: L,
+        make: M,
+    }
+
+    impl<L: Clone, M> tower::layer::Layer<M> for Layer<L> {
+        type Service = Wrap<L, M>;
+
+        fn layer(&self, make: M) -> Self::Service {
+            Self::Service {
+                layer: self.0.clone(),
+                make,
+            }
+        }
+    }
+
+    impl<T, L, M> Make<T> for Wrap<L, M>
+    where
+        M: Make<T>,
+        L: tower::layer::Layer<M::Service>,
+    {
+        type Service = L::Service;
+
+        fn make(&self, target: T) -> Self::Service {
+            self.layer.layer(self.make.make(target))
+        }
+    }
+
+    impl<T, L, M> Service<T> for Wrap<L, M>
+    where
+        M: Service<T>,
+        L: tower::layer::Layer<M::Response> + Clone,
+    {
+        type Response = L::Service;
+        type Error = M::Error;
+        type Future = Wrap<L, M::Future>;
+
+        fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+            self.make.poll_ready()
+        }
+
+        fn call(&mut self, target: T) -> Self::Future {
+            Self::Future {
+                layer: self.layer.clone(),
+                make: self.make.call(target),
+            }
+        }
+    }
+
+    impl<L, F> Future for Wrap<L, F>
+    where
+        F: Future,
+        L: tower::layer::Layer<F::Item>,
+    {
+        type Item = L::Service;
+        type Error = F::Error;
+
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+            let svc = try_ready!(self.make.poll());
+            Ok(self.layer.layer(svc).into())
+        }
     }
 }

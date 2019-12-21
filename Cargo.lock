@@ -571,6 +571,7 @@ dependencies = [
  "linkerd2-error 0.1.0",
  "linkerd2-exp-backoff 0.1.0",
  "linkerd2-fallback 0.1.0",
+ "linkerd2-lock 0.1.0",
  "linkerd2-metrics 0.1.0",
  "linkerd2-opencensus 0.1.0",
  "linkerd2-proxy-api 0.1.11 (git+https://github.com/linkerd/linkerd2-proxy-api?tag=v0.1.11)",
@@ -779,6 +780,15 @@ dependencies = [
  "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-rustls 0.10.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "linkerd2-lock"
+version = "0.1.0"
+dependencies = [
+ "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

@@ -190,6 +190,12 @@ impl Into<EndpointLabels> for Endpoint {
     }
 }
 
+impl std::fmt::Display for Concrete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.dst.fmt(f)
+    }
+}
+
 // === impl LogicalTarget ===
 
 impl From<tls::accept::Meta> for LogicalTarget {
@@ -212,7 +218,7 @@ impl<B> router::Target<http::Request<B>> for LogicalTarget {
             })
             .or_else(|_| http_request_authority_addr(req))
             .or_else(|_| http_request_host_addr(req))
-            .unwrap_or_else(|| self.0.addrs.target_addr());
+            .unwrap_or_else(|_| self.0.addrs.target_addr().into());
 
         let settings = http::Settings::from_request(req);
 
@@ -225,7 +231,7 @@ impl<B> router::Target<http::Request<B>> for LogicalTarget {
 impl router::Target<Logical> for ProfileTarget {
     type Target = Profile;
 
-    fn target(&self, t: Logical) -> Self::Target {
-        Profile(t.dst)
+    fn target(&self, t: &Logical) -> Self::Target {
+        Profile(t.dst.clone())
     }
 }
