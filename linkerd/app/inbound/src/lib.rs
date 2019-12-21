@@ -112,10 +112,9 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push_pending()
                 .push_buffer(2, DispatchDeadline::extract)
-                .push(cache::Layer::new(router_capacity, router_max_idle_age))
-                .into_inner()
-                .spawn();
+                .spawn_cache(router_capacity, router_max_idle_age);
 
+            // TODO around everything...
             // let admission_control = svc::stack(dst_router)
             //     .push_concurrency_limit(buffer.max_in_flight)
             //     .push_load_shed()
@@ -132,6 +131,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
                 ))
+                .serves::<Target>()
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
                     svc::stack(())
@@ -145,18 +145,15 @@ impl<A: OrigDstAddr> Config<A> {
                         .makes::<dst::Route>()
                         .into_inner(),
                 ))
-                .serves::<Profile>()
                 .push_pending()
-                .makes::<Profile>()
-                .push_buffer(2, DispatchDeadline::extract)
+                .push_buffer(2, ())
                 .makes_clone::<Profile>()
-                .push(cache::Layer::new(router_capacity, router_max_idle_age))
-                .into_inner()
-                .spawn();
+                .spawn_cache(router_capacity, router_max_idle_age)
+                .push(router::Layer::new(Profile::from));
 
-            let target_stack = svc::stack(profile_cache).push(router::Layer::new(Profile::from));
-
-            let source_stack = target_stack
+            let source_stack = svc::stack(profile_cache)
+                // Determine the target for each request, obtain a service for
+                // that target, and dispatch the request to that service.
                 .push(router::Layer::new(RecognizeTarget::new))
                 .makes::<tls::accept::Meta>()
                 .into_inner();

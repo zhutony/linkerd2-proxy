@@ -57,8 +57,8 @@ impl<M> MakeCache<M> {
     pub fn spawn<T>(&self) -> Service<T, M>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
-        M: Make<T> + Clone + Send + Sync + 'static,
-        M::Service: Clone + Send + Sync + 'static,
+        M: Make<T> + Clone + Send + 'static,
+        M::Service: Clone + Send + 'static,
     {
         let (service, purge) = Service::new(
             self.inner.clone(),

@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::proxy::{buffer, http, pending};
-use crate::Error;
+use crate::{cache, Error};
 pub use linkerd2_stack::{self as stack, layer, map_target, Layer, LayerExt, Make, Shared};
 pub use linkerd2_timeout::stack as timeout;
 use std::time::Duration;
@@ -76,16 +76,38 @@ impl<S> Stack<S> {
         Stack(layer.layer(self.0))
     }
 
+    pub fn spawn_cache<T>(
+        self,
+        capacity: usize,
+        max_idle_age: Duration,
+    ) -> Stack<cache::Service<T, S>>
+    where
+        T: Clone + Eq + std::hash::Hash + Send + 'static,
+        S: Make<T> + Clone + Send + 'static,
+        S::Service: Clone + Send + 'static,
+    {
+        Stack(
+            cache::Layer::new(capacity, max_idle_age)
+                .layer(self.0)
+                .spawn(),
+        )
+    }
+
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_pending(self) -> Stack<pending::MakePending<S>> {
+    pub fn push_pending<T>(self) -> Stack<pending::MakePending<S>>
+    where
+        S: Service<T>,
+    {
         self.push(pending::layer())
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
+    pub fn push_buffer<T, D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
     where
+        S: Make<T>,
         D: buffer::Deadline<Req>,
         Req: Send + 'static,
+        buffer::Make<S, D, Req>: Make<T>,
     {
         self.push(buffer::layer(bound, d))
     }
