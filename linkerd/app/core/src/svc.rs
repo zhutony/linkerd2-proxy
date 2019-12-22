@@ -165,6 +165,15 @@ impl<S> Stack<S> {
         self
     }
 
+    /// Validates that this stack serves T-typed targets.
+    pub fn routes<T, Req>(self) -> Self
+    where
+        S: Make<T>,
+        S::Service: Service<Req>,
+    {
+        self
+    }
+
     pub fn into_inner(self) -> S {
         self.0
     }

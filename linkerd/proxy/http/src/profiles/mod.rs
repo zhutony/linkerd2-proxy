@@ -49,7 +49,7 @@ pub trait GetRoutes<T> {
 
 impl<T, S> GetRoutes<T> for S
 where
-    T: CanGetDestination,
+    T: HasDestination,
     S: tower::Service<Addr, Response = Option<watch::Receiver<Routes>>>,
     S::Error: Into<Error>,
 {
@@ -61,7 +61,7 @@ where
     }
 
     fn get_routes(&mut self, target: T) -> Self::Future {
-        tower::Service::call(self, target.get_destination())
+        tower::Service::call(self, target.destination())
     }
 }
 
@@ -74,14 +74,14 @@ pub trait WithRoute {
 
 /// Implemented by target types that can have their `NameAddr` destination
 /// changed.
-pub trait WithAddr {
-    fn with_addr(self, addr: NameAddr) -> Self;
+pub trait OverrideDestination {
+    fn override_destination(self, addr: NameAddr) -> Self;
 }
 
 /// Implemented by target types that may have a `NameAddr` destination that
 /// can be discovered via `GetRoutes`.
-pub trait CanGetDestination {
-    fn get_destination(&self) -> Addr;
+pub trait HasDestination {
+    fn destination(&self) -> Addr;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]

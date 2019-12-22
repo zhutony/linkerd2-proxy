@@ -3,85 +3,89 @@ use linkerd2_stack::Make;
 use std::hash::Hash;
 use tower::util::{Oneshot, ServiceExt};
 
-pub trait Target<Req> {
-    type Target: Clone + Eq + Hash;
+pub trait Key<T> {
+    type Key: Clone + Eq + Hash;
 
-    fn target(&self, req: &Req) -> Self::Target;
+    fn key(&self, t: &T) -> Self::Key;
 }
 
 #[derive(Clone, Debug)]
 pub struct Layer<T> {
-    make_target: T,
+    make_key: T,
 }
 
 #[derive(Clone, Debug)]
 pub struct MakeRouter<T, M> {
-    make_target: T,
+    make_key: T,
     make_route: M,
 }
 
 #[derive(Clone, Debug)]
 pub struct Router<T, M> {
-    target: T,
+    key: T,
     make: M,
 }
 
-impl<T: Clone> Layer<T> {
-    pub fn new(make_target: T) -> Self {
-        Self { make_target }
+impl<K: Clone> Layer<K> {
+    pub fn new(make_key: K) -> Self {
+        Self { make_key }
     }
 }
 
-impl<T: Clone, M> tower::layer::Layer<M> for Layer<T> {
-    type Service = MakeRouter<T, M>;
+impl<K: Clone, M> tower::layer::Layer<M> for Layer<K> {
+    type Service = MakeRouter<K, M>;
 
     fn layer(&self, make_route: M) -> Self::Service {
         MakeRouter {
             make_route,
-            make_target: self.make_target.clone(),
+            make_key: self.make_key.clone(),
         }
     }
 }
 
-impl<K, T: Make<K>, M: Clone> Make<K> for MakeRouter<T, M> {
-    type Service = Router<T::Service, M>;
-
-    fn make(&self, key: K) -> Self::Service {
-        Router {
-            make: self.make_route.clone(),
-            target: self.make_target.make(key),
-        }
-    }
-}
-
-impl<Req, S, T, M> tower::Service<Req> for Router<T, M>
+impl<T, K, M> Make<T> for MakeRouter<K, M>
 where
-    T: Target<Req>,
-    M: Make<T::Target, Service = S>,
-    S: tower::Service<Req>,
+    K: Make<T>,
+    M: Clone,
+{
+    type Service = Router<K::Service, M>;
+
+    fn make(&self, t: T) -> Self::Service {
+        Router {
+            key: self.make_key.make(t),
+            make: self.make_route.clone(),
+        }
+    }
+}
+
+impl<U, S, K, M> tower::Service<U> for Router<K, M>
+where
+    K: Key<U>,
+    M: Make<K::Key, Service = S>,
+    S: tower::Service<U>,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = Oneshot<S, Req>;
+    type Future = Oneshot<S, U>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         Ok(().into())
     }
 
-    fn call(&mut self, req: Req) -> Self::Future {
-        let target = self.target.target(&req);
-        self.make.make(target).oneshot(req)
+    fn call(&mut self, req: U) -> Self::Future {
+        let key = self.key.key(&req);
+        self.make.make(key).oneshot(req)
     }
 }
 
-impl<Req, K, F> Target<Req> for F
+impl<T, K, F> Key<T> for F
 where
-    F: Fn(&Req) -> K,
+    F: Fn(&T) -> K,
     K: Clone + Eq + Hash,
 {
-    type Target = K;
+    type Key = K;
 
-    fn target(&self, req: &Req) -> Self::Target {
-        (self)(req)
+    fn key(&self, t: &T) -> Self::Key {
+        (self)(t)
     }
 }

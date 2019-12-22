@@ -18,7 +18,8 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc, trace, trace_context,
+    svc::{self, Make},
+    trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     Addr, Conditional, DispatchDeadline, Error, ProxyMetrics, CANONICAL_DST_HEADER,
     DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
@@ -183,57 +184,62 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
                     svc::stack(())
-                        .push(http::insert::target::layer())
                         .push(http::metrics::layer::<_, classify::Response>(
                             metrics.http_route_retry.clone(),
                         ))
                         .makes_clone::<dst::Route>()
                         .push(http::retry::layer(metrics.http_route_retry))
+                        .push_wrap(svc::layers().push_lock())
                         .makes::<dst::Route>()
                         .push(http::timeout::layer())
                         .push(http::metrics::layer::<_, classify::Response>(
                             metrics.http_route,
                         ))
                         .push(classify::layer())
-                        .push(trace::layer(
-                            |dst: &Logical| info_span!("logical", addr = %dst.dst),
-                        ))
                         .into_inner(),
                 ))
                 .serves::<Profile>()
                 .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_wrap(
+                    svc::layers()
+                        .push_lock()
+                        .push(svc::map_target::layer(Concrete::from)),
+                )
                 .makes::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Profile>()
+                .push_pending()
+                .push_wrap(svc::layers().push_lock())
                 .push(router::Layer::new(|()| ProfileTarget))
+                .routes::<(), Logical>()
                 .make(());
 
             let logical_cache = svc::stack(profile_cache)
-                .push(trace::layer(
-                    |dst: &Logical| info_span!("logical", addr = %dst.dst),
-                ))
-                .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 .serves::<Logical>()
+                .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 .push(http::canonicalize::Layer::new(
                     dns_resolver,
                     canonicalize_timeout,
                 ))
+                .push_pending()
+                .push_wrap(svc::layers().push_lock())
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Logical>()
                 .push_wrap(
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
-                .push(http::insert::target::layer())
                 .push(trace::layer(
                     |logical: Logical| info_span!("logical", addr = %logical.dst),
                 ))
+                .push_pending()
+                .makes::<Logical>()
                 .push(router::Layer::new(LogicalTarget::from));
 
             let server_stack = logical_cache
                 .push_wrap(
                     svc::layers()
-                    .push(http::insert::target::layer())
                     .push(errors::layer())
                     .push(trace_context::layer(span_sink.map(|span_sink| {
                         SpanConverter::server(span_sink, trace_labels())

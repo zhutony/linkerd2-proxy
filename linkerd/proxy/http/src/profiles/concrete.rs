@@ -1,4 +1,4 @@
-use super::{WeightedAddr, WithAddr};
+use super::{OverrideDestination, WeightedAddr};
 use futures::{future, Async, Future, Poll};
 use linkerd2_addr::NameAddr;
 use linkerd2_error::Error;
@@ -66,7 +66,7 @@ impl std::fmt::Debug for Routes {
 
 impl<T, S> tower::Service<T> for Service<S>
 where
-    T: WithAddr,
+    T: OverrideDestination,
     S: tower::Service<T>,
     S::Error: Into<Error>,
 {
@@ -91,7 +91,7 @@ where
     fn call(&mut self, target: T) -> Self::Future {
         let target = match self.routes {
             Routes::Forward(None) => target,
-            Routes::Forward(Some(ref addr)) => target.with_addr(addr.clone()),
+            Routes::Forward(Some(ref addr)) => target.override_destination(addr.clone()),
             Routes::Override {
                 ref distribution,
                 ref overrides,
@@ -99,7 +99,7 @@ where
                 debug_assert!(overrides.len() > 1);
                 let idx = distribution.sample(&mut self.rng);
                 debug_assert!(idx < overrides.len());
-                target.with_addr(overrides[idx].clone())
+                target.override_destination(overrides[idx].clone())
             }
         };
 

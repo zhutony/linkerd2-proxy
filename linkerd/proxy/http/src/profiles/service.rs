@@ -12,7 +12,7 @@
 
 use super::concrete;
 use super::requests::Requests;
-use super::{GetRoutes, Route, Routes, WithAddr, WithRoute};
+use super::{GetRoutes, OverrideDestination, Route, Routes, WithRoute};
 use futures::{try_ready, Async, Future, Poll, Stream};
 use linkerd2_error::Error;
 use linkerd2_stack::{proxy, Make};
@@ -359,7 +359,7 @@ impl<T, M: tower::Service<T>> tower::Service<T> for Forward<M> {
 
 impl<T, M> tower::Service<T> for Override<M>
 where
-    T: WithAddr,
+    T: OverrideDestination,
     M: tower::Service<T>,
     M::Error: Into<Error>,
 {

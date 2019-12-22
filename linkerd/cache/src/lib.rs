@@ -67,7 +67,7 @@ where
 impl<T, M> tower::Service<T> for Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T> + Clone,
+    M: Make<T>,
     M::Service: Clone,
 {
     type Response = M::Service;

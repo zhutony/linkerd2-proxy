@@ -1,10 +1,10 @@
 use indexmap::IndexMap;
 use linkerd2_app_core::{
-    dst::Route,
+    dst, metric_labels,
     metric_labels::{prefix_labels, EndpointLabels},
     proxy::{
         api_resolve::{Metadata, ProtocolHint},
-        http::{self, identity_from_header},
+        http::{self, identity_from_header, profiles},
         identity,
         resolve::map_endpoint::MapEndpoint,
         tap,
@@ -75,11 +75,15 @@ impl From<SocketAddr> for Endpoint {
     fn from(addr: SocketAddr) -> Self {
         Self {
             addr,
-            dst_logical: None,
-            dst_concrete: None,
-            identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
             metadata: Metadata::empty(),
-            http_settings: http::Settings::NotHttp,
+            identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
+            concrete: Concrete {
+                dst: addr.into(),
+                logical: Logical {
+                    dst: addr.into(),
+                    settings: http::Settings::NotHttp,
+                },
+            },
         }
     }
 }
@@ -92,11 +96,9 @@ impl std::fmt::Display for Endpoint {
 
 impl std::hash::Hash for Endpoint {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.dst_logical.hash(state);
-        self.dst_concrete.hash(state);
         self.addr.hash(state);
         self.identity.hash(state);
-        self.http_settings.hash(state);
+        self.concrete.hash(state);
         // Ignore metadata.
     }
 }
@@ -149,7 +151,9 @@ impl tap::Inspect for Endpoint {
     }
 
     fn route_labels<B>(&self, req: &http::Request<B>) -> Option<Arc<IndexMap<String, String>>> {
-        req.extensions().get::<Route>().map(|r| r.labels().clone())
+        req.extensions()
+            .get::<dst::Route>()
+            .map(|r| r.route.labels().clone())
     }
 
     fn is_outbound<B>(&self, _: &http::Request<B>) -> bool {
@@ -181,8 +185,8 @@ impl Into<EndpointLabels> for Endpoint {
     fn into(self) -> EndpointLabels {
         use linkerd2_app_core::metric_labels::{Direction, TlsId};
         EndpointLabels {
-            dst_logical: self.dst_logical,
-            dst_concrete: self.dst_concrete,
+            dst_logical: self.concrete.logical.dst.name_addr().cloned(),
+            dst_concrete: self.concrete.dst.name_addr().cloned(),
             direction: Direction::Out,
             tls_id: self.identity.as_ref().map(|id| TlsId::ServerId(id.clone())),
             labels: prefix_labels("dst", self.metadata.labels().into_iter()),
@@ -204,10 +208,10 @@ impl From<tls::accept::Meta> for LogicalTarget {
     }
 }
 
-impl<B> router::Target<http::Request<B>> for LogicalTarget {
-    type Target = Logical;
+impl<B> router::Key<http::Request<B>> for LogicalTarget {
+    type Key = Logical;
 
-    fn target(&self, req: &http::Request<B>) -> Self::Target {
+    fn key(&self, req: &http::Request<B>) -> Self::Key {
         use linkerd2_app_core::{
             http_request_authority_addr, http_request_host_addr, http_request_l5d_override_dst_addr,
         };
@@ -226,12 +230,63 @@ impl<B> router::Target<http::Request<B>> for LogicalTarget {
     }
 }
 
+impl http::canonicalize::Target for Logical {
+    fn addr(&self) -> &Addr {
+        &self.dst
+    }
+
+    fn addr_mut(&mut self) -> &mut Addr {
+        &mut self.dst
+    }
+}
+
+impl<'t> From<&'t Logical> for ::http::header::HeaderValue {
+    fn from(logical: &'t Logical) -> Self {
+        ::http::header::HeaderValue::from_str(&logical.dst.to_string())
+            .expect("addr must be a valid header")
+    }
+}
+
+impl profiles::OverrideDestination for Concrete {
+    fn override_destination(mut self, addr: NameAddr) -> Self {
+        self.dst = addr.into();
+        self
+    }
+}
+
+impl From<Logical> for Concrete {
+    fn from(logical: Logical) -> Self {
+        Concrete {
+            dst: logical.dst.clone(),
+            logical,
+        }
+    }
+}
+
 // === impl ProfileTarget ===
 
-impl router::Target<Logical> for ProfileTarget {
-    type Target = Profile;
+impl router::Key<Logical> for ProfileTarget {
+    type Key = Profile;
 
-    fn target(&self, t: &Logical) -> Self::Target {
+    fn key(&self, t: &Logical) -> Self::Key {
         Profile(t.dst.clone())
+    }
+}
+
+impl profiles::HasDestination for Profile {
+    fn destination(&self) -> Addr {
+        self.0.clone()
+    }
+}
+
+impl profiles::WithRoute for Profile {
+    type Route = dst::Route;
+
+    fn with_route(self, route: profiles::Route) -> Self::Route {
+        dst::Route {
+            route,
+            target: self.0.clone(),
+            direction: metric_labels::Direction::Out,
+        }
     }
 }

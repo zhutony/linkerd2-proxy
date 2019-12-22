@@ -69,7 +69,7 @@ where
                 orig_proto::L5D_ORIG_PROTO,
                 endpoint,
             );
-            endpoint.http_settings = Settings::Http2;
+            endpoint.concrete.logical.settings = Settings::Http2;
         }
         let inner = self.inner.make(endpoint);
 
@@ -102,7 +102,7 @@ where
                 orig_proto::L5D_ORIG_PROTO,
                 endpoint,
             );
-            endpoint.http_settings = Settings::Http2;
+            endpoint.concrete.logical.settings = Settings::Http2;
         }
 
         let inner = self.inner.make_service(endpoint);

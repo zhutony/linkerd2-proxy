@@ -91,8 +91,8 @@ impl From<Target> for Profile {
     }
 }
 
-impl profiles::CanGetDestination for Profile {
-    fn get_destination(&self) -> Addr {
+impl profiles::HasDestination for Profile {
+    fn destination(&self) -> Addr {
         self.0.clone()
     }
 }
@@ -204,7 +204,7 @@ impl<A> router::Target<http::Request<A>> for RequestTarget {
     type Target = Target;
 
     fn target(&self, req: &http::Request<A>) -> Self::Target {
-        let dst_name = req
+        let dst = req
             .headers()
             .get(CANONICAL_DST_HEADER)
             .and_then(|dst| {

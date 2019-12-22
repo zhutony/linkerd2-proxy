@@ -34,6 +34,7 @@ pub struct MakeFuture<F> {
     timeout: Option<Duration>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Timeout<T>(Inner<T>);
 
 /// A marker set in `http::Response::extensions` that *this* process triggered

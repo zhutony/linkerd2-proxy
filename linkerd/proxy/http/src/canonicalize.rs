@@ -9,12 +9,18 @@
 //! DNS TTLs are honored and the most recent value is added to each request's
 //! extensions.
 
-use futures::{try_ready, Async, Future, Poll};
+use futures::{Async, Future, Poll};
 use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_dns as dns;
 use std::time::Duration;
 use tokio::timer::Timeout;
+use tower::util::{Oneshot, ServiceExt};
 use tracing::warn;
+
+pub trait Target {
+    fn addr(&self) -> &Addr;
+    fn addr_mut(&mut self) -> &mut Addr;
+}
 
 // FIXME the resolver should be abstracted to a trait so that this can be tested
 // without a real DNS service.
@@ -25,20 +31,19 @@ pub struct Layer {
 }
 
 #[derive(Clone, Debug)]
-pub struct Stack<M> {
-    resolver: dns::Resolver,
+pub struct Canonicalize<M> {
     inner: M,
     timeout: Duration,
+    resolver: dns::Resolver,
 }
 
-pub enum MakeFuture<M: tower::Service<Addr>> {
+pub enum MakeFuture<T, M: tower::Service<T>> {
     Refine {
         future: Timeout<dns::RefineFuture>,
-        original: NameAddr,
-        make: M,
+        make: Option<M>,
+        original: Option<T>,
     },
-    Ready(M, Addr),
-    Make(M::Future),
+    Make(Oneshot<M, T>),
 }
 
 // === Layer ===
@@ -49,44 +54,42 @@ impl Layer {
     }
 }
 
-impl<M> tower::layer::Layer<M> for Layer
-where
-    M: tower::Service<Addr> + Clone,
-{
-    type Service = Stack<M>;
+impl<M> tower::layer::Layer<M> for Layer {
+    type Service = Canonicalize<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        Stack {
+        Self::Service {
             inner,
-            resolver: self.resolver.clone(),
             timeout: self.timeout,
+            resolver: self.resolver.clone(),
         }
     }
 }
 
-// === impl Stack ===
+// === impl Canonicalize ===
 
-impl<M> tower::Service<Addr> for Stack<M>
+impl<T, M> tower::Service<T> for Canonicalize<M>
 where
-    M: tower::Service<Addr> + Clone,
+    T: Target + Clone,
+    M: tower::Service<T> + Clone,
 {
     type Response = M::Response;
     type Error = M::Error;
-    type Future = MakeFuture<M>;
+    type Future = MakeFuture<T, M>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
+        Ok(().into())
     }
 
-    fn call(&mut self, addr: Addr) -> Self::Future {
-        match addr.clone() {
-            Addr::Socket(_) => MakeFuture::Ready(self.inner.clone(), addr),
-            Addr::Name(original) => {
-                let refine = self.resolver.refine(original.name());
+    fn call(&mut self, target: T) -> Self::Future {
+        match target.addr().name_addr() {
+            None => MakeFuture::Make(self.inner.clone().oneshot(target)),
+            Some(na) => {
+                let refine = self.resolver.refine(na.name());
                 MakeFuture::Refine {
+                    original: Some(target.clone()),
+                    make: Some(self.inner.clone()),
                     future: Timeout::new(refine, self.timeout),
-                    make: self.inner.clone(),
-                    original,
                 }
             }
         }
@@ -95,9 +98,10 @@ where
 
 // === impl MakeFuture ===
 
-impl<M> Future for MakeFuture<M>
+impl<T, M> Future for MakeFuture<T, M>
 where
-    M: tower::Service<Addr> + Clone,
+    T: Target,
+    M: tower::Service<T> + Clone,
 {
     type Item = M::Response;
     type Error = M::Error;
@@ -105,26 +109,27 @@ where
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             *self = match self {
+                MakeFuture::Make(ref mut fut) => return fut.poll(),
                 MakeFuture::Refine {
                     ref mut future,
-                    original,
-                    make,
+                    ref mut make,
+                    ref mut original,
                 } => match future.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(refine)) => {
-                        let name = NameAddr::new(refine.name, original.port());
-                        MakeFuture::Ready(make.clone(), name.into())
+                        let make = make.take().expect("illegal state");
+                        let mut target = original.take().expect("illegal state");
+                        let name = NameAddr::new(refine.name, target.addr().port());
+                        *target.addr_mut() = name.into();
+                        MakeFuture::Make(make.oneshot(target))
                     }
                     Err(error) => {
-                        warn!(%error, name = %original, "failed to refine name via DNS");
-                        MakeFuture::Ready(make.clone(), original.clone().into())
+                        let make = make.take().expect("illegal state");
+                        let target = original.take().expect("illegal state");
+                        warn!(%error, addr = %target.addr(), "failed to refine name via DNS");
+                        MakeFuture::Make(make.oneshot(target))
                     }
                 },
-                MakeFuture::Ready(make, addr) => {
-                    try_ready!(make.poll_ready());
-                    MakeFuture::Make(make.call(addr.clone()))
-                }
-                MakeFuture::Make(ref mut fut) => return fut.poll(),
             };
         }
     }
