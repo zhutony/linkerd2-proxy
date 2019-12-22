@@ -189,7 +189,6 @@ impl<A: OrigDstAddr> Config<A> {
                         ))
                         .makes_clone::<dst::Route>()
                         .push(http::retry::layer(metrics.http_route_retry))
-                        .push_wrap(svc::layers().push_lock())
                         .makes::<dst::Route>()
                         .push(http::timeout::layer())
                         .push(http::metrics::layer::<_, classify::Response>(
@@ -231,8 +230,9 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
                 .push(trace::layer(
-                    |logical: Logical| info_span!("logical", addr = %logical.dst),
+                    |logical: &Logical| info_span!("logical", addr = %logical.dst),
                 ))
+                .serves::<Logical>()
                 .push_pending()
                 .makes::<Logical>()
                 .push(router::Layer::new(LogicalTarget::from));

@@ -44,6 +44,7 @@ pub struct MakeFuture<F, R> {
     policy: Option<R>,
 }
 
+#[derive(Clone, Debug)]
 pub enum Service<R, S> {
     Inner(S),
     Retry(R, S),
