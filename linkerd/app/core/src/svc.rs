@@ -58,7 +58,7 @@ impl<L> Layers<L> {
     }
 
     pub fn push_lock(self) -> Layers<Pair<L, lock::Layer>> {
-        self.push(lock::Layer)
+        self.push(lock::Layer::new())
     }
 
     pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
@@ -93,7 +93,7 @@ impl<S> Stack<S> {
     }
 
     pub fn push_lock(self) -> Stack<lock::Lock<S>> {
-        self.push(lock::Layer)
+        self.push(lock::Layer::new())
     }
 
     /// Buffer requests when when the next layer is out of capacity.

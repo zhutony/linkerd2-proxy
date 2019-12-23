@@ -115,7 +115,7 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .serves::<Endpoint>()
                 .push_pending()
-                .push_per_make(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer::new())
                 .makes::<Endpoint>()
                 .spawn_cache(router_capacity, router_max_idle_age);
 

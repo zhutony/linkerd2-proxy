@@ -168,9 +168,9 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
                 ))
-                .serves::<Concrete>()
                 .push_pending()
-                .push_per_make(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer::new())
+                .makes::<Concrete>()
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
@@ -207,7 +207,7 @@ impl<A: OrigDstAddr> Config<A> {
                     canonicalize_timeout,
                 ))
                 .push_pending()
-                .push_per_make(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Logical>();
 
@@ -225,7 +225,7 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>()
                 .push_pending()
-                .push_per_make(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer::new())
                 .makes::<Logical>()
                 .push(router::Layer::new(LogicalTarget::from))
                 .push_per_make(
