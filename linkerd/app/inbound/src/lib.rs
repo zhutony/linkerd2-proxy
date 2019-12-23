@@ -71,7 +71,7 @@ impl<A: OrigDstAddr> Config<A> {
     ) -> Result<Inbound, Error>
     where
         A: Send + 'static,
-        P: GrpcService<grpc::BoxBody> + Clone + Send + Sync + 'static,
+        P: GrpcService<grpc::BoxBody> + Clone + Send + 'static,
         P::ResponseBody: Send,
         <P::ResponseBody as grpc::Body>::Data: Send,
         P::Future: Send,

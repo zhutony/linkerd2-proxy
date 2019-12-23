@@ -1,7 +1,6 @@
 use ipnet::{Contains, IpNet};
 use linkerd2_app_core::{
     dns::Suffix,
-    dst::DstAddr,
     exp_backoff::{ExponentialBackoff, ExponentialBackoffStream},
     proxy::{api_resolve as api, resolve::recover},
     request_filter, Addr, Error, Recover,
@@ -9,6 +8,8 @@ use linkerd2_app_core::{
 use std::net::IpAddr;
 use std::sync::Arc;
 use tower_grpc::{generic::client::GrpcService, Body, BoxBody, Code, Status};
+
+pub type Target = linkerd2_app_outbound::Concrete;
 
 pub type Resolve<S> = request_filter::Service<
     PermitConfiguredDsts,
@@ -28,11 +29,11 @@ where
     <S::ResponseBody as Body>::Data: Send,
     S::Future: Send,
 {
-    request_filter::Service::new::<DstAddr>(
+    request_filter::Service::new::<Target>(
         PermitConfiguredDsts::new(suffixes, nets),
-        recover::Resolve::new::<DstAddr>(
+        recover::Resolve::new::<Target>(
             backoff.into(),
-            api::Resolve::new::<DstAddr>(service).with_context_token(token),
+            api::Resolve::new::<Target>(service).with_context_token(token),
         ),
     )
 }
@@ -63,12 +64,12 @@ impl PermitConfiguredDsts {
     }
 }
 
-impl request_filter::RequestFilter<DstAddr> for PermitConfiguredDsts {
+impl request_filter::RequestFilter<Target> for PermitConfiguredDsts {
     type Error = Unresolvable;
 
-    fn filter(&self, dst: DstAddr) -> Result<DstAddr, Self::Error> {
-        let permitted = match dst.dst_concrete() {
-            Addr::Name(name) => self
+    fn filter(&self, t: Target) -> Result<Target, Self::Error> {
+        let permitted = match t.dst {
+            Addr::Name(ref name) => self
                 .name_suffixes
                 .iter()
                 .any(|suffix| suffix.contains(name.name())),
@@ -80,7 +81,7 @@ impl request_filter::RequestFilter<DstAddr> for PermitConfiguredDsts {
         };
 
         if permitted {
-            Ok(dst)
+            Ok(t)
         } else {
             Err(Unresolvable(()))
         }

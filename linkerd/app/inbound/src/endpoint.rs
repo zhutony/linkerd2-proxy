@@ -200,11 +200,11 @@ impl From<tls::accept::Meta> for RequestTarget {
     }
 }
 
-impl<A> router::Target<http::Request<A>> for RequestTarget {
-    type Target = Target;
+impl<A> router::Key<http::Request<A>> for RequestTarget {
+    type Key = Target;
 
-    fn target(&self, req: &http::Request<A>) -> Self::Target {
-        let dst = req
+    fn key(&self, req: &http::Request<A>) -> Self::Key {
+        let dst_name = req
             .headers()
             .get(CANONICAL_DST_HEADER)
             .and_then(|dst| {
@@ -239,10 +239,10 @@ impl<A> router::Target<http::Request<A>> for RequestTarget {
 
 // === impl ProfileTarget ===
 
-impl router::Target<Target> for ProfileTarget {
-    type Target = Profile;
+impl router::Key<Target> for ProfileTarget {
+    type Key = Profile;
 
-    fn target(&self, t: &Target) -> Self::Target {
+    fn key(&self, t: &Target) -> Self::Key {
         Profile(
             t.dst_name
                 .clone()

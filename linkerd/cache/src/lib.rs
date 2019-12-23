@@ -31,7 +31,7 @@ where
 impl<T, M> Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T> + Clone,
+    M: Make<T>,
     M::Service: Clone,
 {
     pub fn new(make: M, capacity: usize, max_idle_age: Duration) -> (Self, Purge<T, M::Service>) {

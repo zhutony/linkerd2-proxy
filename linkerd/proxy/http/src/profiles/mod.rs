@@ -75,7 +75,7 @@ pub trait WithRoute {
 /// Implemented by target types that can have their `NameAddr` destination
 /// changed.
 pub trait OverrideDestination {
-    fn override_destination(self, addr: NameAddr) -> Self;
+    fn dst_mut(&mut self) -> &mut Addr;
 }
 
 /// Implemented by target types that may have a `NameAddr` destination that

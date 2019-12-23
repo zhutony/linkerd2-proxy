@@ -248,9 +248,8 @@ impl<'t> From<&'t Logical> for ::http::header::HeaderValue {
 }
 
 impl profiles::OverrideDestination for Concrete {
-    fn override_destination(mut self, addr: NameAddr) -> Self {
-        self.dst = addr.into();
-        self
+    fn dst_mut(&mut self) -> &mut Addr {
+        &mut self.dst
     }
 }
 

@@ -70,7 +70,10 @@ impl Config<SysOrigDstAddr> {
 }
 
 impl<A: OrigDstAddr + Send + 'static> Config<A> {
-    pub fn with_orig_dst_addr<B: OrigDstAddr + Send + 'static>(self, orig_dst: B) -> Config<B> {
+    pub fn with_orig_dst_addr<B: OrigDstAddr + Send + Sync + 'static>(
+        self,
+        orig_dst: B,
+    ) -> Config<B> {
         Config {
             outbound: self.outbound.with_orig_dst_addr(orig_dst.clone()),
             inbound: self.inbound.with_orig_dst_addr(orig_dst),
@@ -139,6 +142,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push(grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
                     .push_pending()
+                    //.push_wrap(svc::lock::Layer)
                     .push_buffer(
                         dst.control.buffer.max_in_flight,
                         dst.control.buffer.dispatch_timeout,

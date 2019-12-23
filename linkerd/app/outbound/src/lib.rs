@@ -119,7 +119,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.transport.layer_connect(TransportLabels));
 
             // Instantiates an HTTP client for for a `client::Config`
-            let client_stack = connect_stack
+            let endpoint_stack = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
                 .push(reconnect::layer({
@@ -132,17 +132,11 @@ impl<A: OrigDstAddr> Config<A> {
                         .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
                 ))
                 .push(http::normalize_uri::layer())
-                .serves::<Endpoint>();
-
-            let endpoint_stack = client_stack
                 .push_wrap(
                     svc::layers()
                         .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                    .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                    .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                    // disabled due to information leagkage
-                    //.push(add_remote_ip_on_rsp::layer())
-                    //.push(add_server_id_on_rsp::layer())
+                        .push(http::strip_header::response::layer(L5D_SERVER_ID))
+                        .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
                 )
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
@@ -162,7 +156,8 @@ impl<A: OrigDstAddr> Config<A> {
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
-            let balancer_cache = svc::stack(endpoint_stack)
+            let balancer_cache = endpoint_stack
+                .clone()
                 .push_spawn_ready()
                 .push(discover::Layer::new(
                     DISCOVER_UPDATE_BUFFER_CAPACITY,
@@ -175,11 +170,11 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Concrete>()
                 .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_wrap(svc::lock::Layer)
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
-            let profile_cache = balancer_cache
+            let profile_stack = balancer_cache
                 .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
@@ -199,21 +194,12 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Profile>()
                 .push_pending()
-                .push_wrap(
-                    svc::layers()
-                        .push_lock()
-                        .push(svc::map_target::layer(Concrete::from)),
-                )
-                .makes::<Profile>()
-                .spawn_cache(router_capacity, router_max_idle_age)
-                .serves::<Profile>()
-                .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_wrap(svc::map_target::layer(Concrete::from))
                 .push(router::Layer::new(|()| ProfileTarget))
                 .routes::<(), Logical>()
                 .make(());
 
-            let logical_cache = svc::stack(profile_cache)
+            let logical_cache = svc::stack(profile_stack)
                 .serves::<Logical>()
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 .push(http::canonicalize::Layer::new(
@@ -221,8 +207,13 @@ impl<A: OrigDstAddr> Config<A> {
                     canonicalize_timeout,
                 ))
                 .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_wrap(svc::lock::Layer)
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Logical>();
+
+            let fallback_stack = svc::stack(endpoint_stack);
+
+            let server_stack = svc::stack(logical_cache)
                 .serves::<Logical>()
                 .push_wrap(
                     svc::layers()
@@ -234,10 +225,9 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>()
                 .push_pending()
+                .push_wrap(svc::lock::Layer)
                 .makes::<Logical>()
-                .push(router::Layer::new(LogicalTarget::from));
-
-            let server_stack = logical_cache
+                .push(router::Layer::new(LogicalTarget::from))
                 .push_wrap(
                     svc::layers()
                     .push(errors::layer())

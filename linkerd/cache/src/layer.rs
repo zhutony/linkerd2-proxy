@@ -54,17 +54,14 @@ impl<M> tower::layer::Layer<M> for Layer {
 // === impl MakeCache ===
 
 impl<M> MakeCache<M> {
-    pub fn spawn<T>(&self) -> Service<T, M>
+    pub fn spawn<T>(self) -> Service<T, M>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
-        M: Make<T> + Clone + Send + 'static,
+        M: Make<T> + Send + 'static,
         M::Service: Clone + Send + 'static,
     {
-        let (service, purge) = Service::new(
-            self.inner.clone(),
-            self.config.capacity,
-            self.config.max_idle_age,
-        );
+        let (service, purge) =
+            Service::new(self.inner, self.config.capacity, self.config.max_idle_age);
         tokio::spawn(
             purge
                 .map_err(|e| match e {})

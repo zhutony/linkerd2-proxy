@@ -86,6 +86,10 @@ impl<S> Stack<S> {
         self.push(pending::layer())
     }
 
+    pub fn push_lock(self) -> Stack<lock::Lock<S>> {
+        self.push(lock::Layer)
+    }
+
     /// Buffer requests when when the next layer is out of capacity.
     pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
     where
@@ -122,7 +126,7 @@ impl<S> Stack<S> {
     ) -> Stack<cache::Service<T, S>>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
-        S: Make<T> + Clone + Send + 'static,
+        S: Make<T> + Send + 'static,
         S::Service: Clone + Send + 'static,
     {
         Stack(
@@ -132,10 +136,12 @@ impl<S> Stack<S> {
         )
     }
 
-    pub fn boxed<T, A, B>(self) -> Stack<http::boxed::Make<S, A, B>>
+    pub fn boxed<A, B>(self) -> Stack<http::boxed::BoxedService<A>>
     where
         A: 'static,
-        S: tower::MakeService<T, http::Request<A>, Response = http::Response<B>>,
+        S: tower::Service<http::Request<A>, Response = http::Response<B>> + Send + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Error> + 'static,
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::new())

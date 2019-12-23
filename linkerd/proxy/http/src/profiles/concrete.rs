@@ -88,10 +88,12 @@ where
         self.make.poll_ready().map_err(Into::into)
     }
 
-    fn call(&mut self, target: T) -> Self::Future {
-        let target = match self.routes {
-            Routes::Forward(None) => target,
-            Routes::Forward(Some(ref addr)) => target.override_destination(addr.clone()),
+    fn call(&mut self, mut target: T) -> Self::Future {
+        match self.routes {
+            Routes::Forward(None) => {}
+            Routes::Forward(Some(ref addr)) => {
+                *target.dst_mut() = addr.clone().into();
+            }
             Routes::Override {
                 ref distribution,
                 ref overrides,
@@ -99,9 +101,9 @@ where
                 debug_assert!(overrides.len() > 1);
                 let idx = distribution.sample(&mut self.rng);
                 debug_assert!(idx < overrides.len());
-                target.override_destination(overrides[idx].clone())
+                *target.dst_mut() = overrides[idx].clone().into();
             }
-        };
+        }
 
         self.make.call(target).map_err(Into::into)
     }
