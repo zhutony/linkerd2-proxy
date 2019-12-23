@@ -152,8 +152,6 @@ pub mod resolve {
     use linkerd2_dns as dns;
     use std::net::SocketAddr;
     use std::{error, fmt};
-    use tracing::info_span;
-    use tracing_futures::{Instrument, Instrumented};
 
     #[derive(Clone, Debug)]
     pub struct Layer {
@@ -177,12 +175,9 @@ pub mod resolve {
     where
         M: svc::Service<client::Target>,
     {
-        Resolve {
-            future: dns::IpAddrFuture,
-            config: ControlAddr,
-            stack: M,
-        },
-        Inner(Instrumented<M::Future>),
+        Resolve(dns::IpAddrFuture, Option<(M, ControlAddr)>),
+        NotReady(M, Option<(SocketAddr, ControlAddr)>),
+        Inner(M::Future),
     }
 
     #[derive(Debug)]
@@ -221,13 +216,14 @@ pub mod resolve {
             let state = match target.addr {
                 Addr::Socket(sa) => State::make_inner(sa, &target, &mut self.inner),
                 Addr::Name(ref na) => {
-                    let cloned = self.inner.clone();
-                    let stack = std::mem::replace(&mut self.inner, cloned);
-                    State::Resolve {
-                        stack,
-                        future: self.dns.resolve_one_ip(na.name()),
-                        config: target.clone(),
-                    }
+                    // The inner service is ready, but we are going to do
+                    // additional work before using it. In case the inner
+                    // service has acquired resources (like a lock), we
+                    // relinquish our claim on the service by replacing it.
+                    self.inner = self.inner.clone();
+
+                    let future = self.dns.resolve_one_ip(na.name());
+                    State::Resolve(future, Some((self.inner.clone(), target.clone())))
                 }
             };
 
@@ -247,18 +243,18 @@ pub mod resolve {
         fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
             loop {
                 self.state = match self.state {
-                    State::Inner(ref mut fut) => {
-                        return fut.poll().map_err(Error::Inner);
+                    State::Resolve(ref mut fut, ref mut stack) => {
+                        let ip = try_ready!(fut.poll().map_err(Error::Dns));
+                        let (svc, config) = stack.take().unwrap();
+                        let addr = SocketAddr::from((ip, config.addr.port()));
+                        State::NotReady(svc, Some((addr, config)))
                     }
-                    State::Resolve {
-                        ref mut future,
-                        ref config,
-                        ref mut stack,
-                    } => {
-                        let ip = try_ready!(future.poll().map_err(Error::Dns));
-                        let sa = SocketAddr::from((ip, config.addr.port()));
-                        State::make_inner(sa, config, stack)
+                    State::NotReady(ref mut svc, ref mut cfg) => {
+                        try_ready!(svc.poll_ready().map_err(Error::Inner));
+                        let (addr, config) = cfg.take().unwrap();
+                        State::make_inner(addr, &config, svc)
                     }
+                    State::Inner(ref mut fut) => return fut.poll().map_err(Error::Inner),
                 };
             }
         }
@@ -274,8 +270,7 @@ pub mod resolve {
                 server_name: dst.identity.clone(),
             };
 
-            info_span!("control", peer.addr = %addr, peer.identity = ?dst.identity)
-                .in_scope(move || State::Inner(mk_svc.call(target).in_current_span()))
+            State::Inner(mk_svc.call(target))
         }
     }
 

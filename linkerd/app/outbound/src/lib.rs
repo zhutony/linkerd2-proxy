@@ -126,13 +126,13 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push_wrap(trace_context::layer(
+                .push_per_make(trace_context::layer(
                     span_sink
                         .clone()
                         .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
                 ))
                 .push(http::normalize_uri::layer())
-                .push_wrap(
+                .push_per_make(
                     svc::layers()
                         .push(http::strip_header::response::layer(L5D_REMOTE_IP))
                         .push(http::strip_header::response::layer(L5D_SERVER_ID))
@@ -164,13 +164,13 @@ impl<A: OrigDstAddr> Config<A> {
                     router_max_idle_age,
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
-                .push_wrap(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
+                .push_per_make(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
                 ))
                 .serves::<Concrete>()
                 .push_pending()
-                .push_wrap(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer)
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
@@ -194,7 +194,7 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Profile>()
                 .push_pending()
-                .push_wrap(svc::map_target::layer(Concrete::from))
+                .push_per_make(svc::map_target::layer(Concrete::from))
                 .push(router::Layer::new(|()| ProfileTarget))
                 .routes::<(), Logical>()
                 .make(());
@@ -207,7 +207,7 @@ impl<A: OrigDstAddr> Config<A> {
                     canonicalize_timeout,
                 ))
                 .push_pending()
-                .push_wrap(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer)
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Logical>();
 
@@ -215,7 +215,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             let server_stack = svc::stack(logical_cache)
                 .serves::<Logical>()
-                .push_wrap(
+                .push_per_make(
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
@@ -225,10 +225,10 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>()
                 .push_pending()
-                .push_wrap(svc::lock::Layer)
+                .push_per_make(svc::lock::Layer)
                 .makes::<Logical>()
                 .push(router::Layer::new(LogicalTarget::from))
-                .push_wrap(
+                .push_per_make(
                     svc::layers()
                     .push(errors::layer())
                     .push(trace_context::layer(span_sink.map(|span_sink| {

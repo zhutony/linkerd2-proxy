@@ -5,16 +5,12 @@
 //! resolv.conf(5) search path of `example.com example.net`. In such a case,
 //! this module may build its inner stack with either `web.example.com.:8080`,
 //! `web.example.net.:8080`, or `web:8080`, depending on the state of DNS.
-//!
-//! DNS TTLs are honored and the most recent value is added to each request's
-//! extensions.
 
-use futures::{Async, Future, Poll};
+use futures::{try_ready, Async, Future, Poll};
 use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_dns as dns;
 use std::time::Duration;
 use tokio::timer::Timeout;
-use tower::util::{Oneshot, ServiceExt};
 use tracing::warn;
 
 pub trait Target {
@@ -43,7 +39,8 @@ pub enum MakeFuture<T, M: tower::Service<T>> {
         make: Option<M>,
         original: Option<T>,
     },
-    Make(Oneshot<M, T>),
+    NotReady(M, Option<T>),
+    Make(M::Future),
 }
 
 // === Layer ===
@@ -78,14 +75,18 @@ where
     type Future = MakeFuture<T, M>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(().into())
+        self.inner.poll_ready()
     }
 
     fn call(&mut self, target: T) -> Self::Future {
         match target.addr().name_addr() {
-            None => MakeFuture::Make(self.inner.clone().oneshot(target)),
+            None => MakeFuture::Make(self.inner.call(target)),
             Some(na) => {
                 let refine = self.resolver.refine(na.name());
+
+                // Relinquish any claim of readiness until `refine` completes.
+                self.inner = self.inner.clone();
+
                 MakeFuture::Refine {
                     original: Some(target.clone()),
                     make: Some(self.inner.clone()),
@@ -109,7 +110,6 @@ where
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             *self = match self {
-                MakeFuture::Make(ref mut fut) => return fut.poll(),
                 MakeFuture::Refine {
                     ref mut future,
                     ref mut make,
@@ -121,15 +121,21 @@ where
                         let mut target = original.take().expect("illegal state");
                         let name = NameAddr::new(refine.name, target.addr().port());
                         *target.addr_mut() = name.into();
-                        MakeFuture::Make(make.oneshot(target))
+                        MakeFuture::NotReady(make, Some(target))
                     }
                     Err(error) => {
                         let make = make.take().expect("illegal state");
                         let target = original.take().expect("illegal state");
                         warn!(%error, addr = %target.addr(), "failed to refine name via DNS");
-                        MakeFuture::Make(make.oneshot(target))
+                        MakeFuture::NotReady(make, Some(target))
                     }
                 },
+                MakeFuture::NotReady(ref mut svc, ref mut target) => {
+                    try_ready!(svc.poll_ready());
+                    let target = target.take().expect("illegal state");
+                    MakeFuture::Make(svc.call(target))
+                }
+                MakeFuture::Make(ref mut fut) => return fut.poll(),
             };
         }
     }

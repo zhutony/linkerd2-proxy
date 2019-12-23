@@ -30,6 +30,18 @@ impl<M, L: Clone> super::Layer<M> for Layer<L> {
     }
 }
 
+impl<T, L, M> super::Make<T> for PerMake<L, M>
+where
+    L: super::Layer<M::Service> + Clone,
+    M: super::Make<T>,
+{
+    type Service = L::Service;
+
+    fn make(&self, target: T) -> Self::Service {
+        self.layer.layer(self.inner.make(target))
+    }
+}
+
 impl<T, L, M> svc::Service<T> for PerMake<L, M>
 where
     L: super::Layer<M::Response> + Clone,

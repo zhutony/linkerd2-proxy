@@ -242,6 +242,7 @@ where
                 // backoff in case this connection attempt fails.
                 State::Disconnected { ref mut backoff } => {
                     tracing::trace!("connecting");
+                    try_ready!(self.resolve.poll_ready().map_err(Into::into));
                     let future = self.resolve.resolve(self.target.clone());
                     State::Connecting {
                         future,

@@ -115,7 +115,8 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .serves::<Endpoint>()
                 .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_per_make(svc::lock::Layer)
+                .makes::<Endpoint>()
                 .spawn_cache(router_capacity, router_max_idle_age);
 
             // Determine the target for each request, obtain a profile route for
@@ -123,7 +124,7 @@ impl<A: OrigDstAddr> Config<A> {
             let profile_cache = svc::stack(endpoint_cache)
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
-                .push_wrap(trace_context::layer(
+                .push_per_make(trace_context::layer(
                     span_sink
                         .clone()
                         .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
@@ -146,7 +147,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .into_inner(),
                 ))
                 .push_pending()
-                .push_wrap(svc::layers().push_lock())
+                .push_per_make(svc::layers().push_lock())
                 .makes_clone::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Profile>()
@@ -159,10 +160,10 @@ impl<A: OrigDstAddr> Config<A> {
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_pending()
-                .push_wrap(strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
-                .push_wrap(
+                .push_per_make(
                     svc::layers()
                         .push(svc::layer::mk(orig_proto::Downgrade::new))
                         .push(strip_header::request::layer(L5D_REMOTE_IP))

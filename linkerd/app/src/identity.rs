@@ -59,7 +59,7 @@ impl Config {
                     .push(proxy::grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
                     .push_pending()
-                    .push_wrap(svc::lock::Layer)
+                    .push_per_make(svc::lock::Layer)
                     .into_inner()
                     .make(addr.clone());
 
