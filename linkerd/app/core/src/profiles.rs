@@ -254,21 +254,20 @@ where
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             self.state = match self.state {
-                State::Disconnected => {
-                    match self.service.poll_ready() {
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Ok(Async::Ready(())) => {}
-                        Err(err) => {
-                            error!("profile service unexpected error: {:?}", err,);
-                            return Ok(Async::Ready(()));
-                        }
-                    };
-                    debug!("getting profile");
-                    let rspf = self
-                        .service
-                        .get_profile(grpc::Request::new(self.request.clone()));
-                    State::Waiting(rspf)
-                }
+                State::Disconnected => match self.service.poll_ready() {
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Err(err) => {
+                        error!("profile service unexpected error: {:?}", err,);
+                        return Ok(Async::Ready(()));
+                    }
+                    Ok(Async::Ready(())) => {
+                        debug!("getting profile");
+                        let rspf = self
+                            .service
+                            .get_profile(grpc::Request::new(self.request.clone()));
+                        State::Waiting(rspf)
+                    }
+                },
                 State::Waiting(ref mut f) => match f.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(rsp)) => {

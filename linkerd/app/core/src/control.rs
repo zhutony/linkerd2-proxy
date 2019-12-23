@@ -220,11 +220,15 @@ pub mod resolve {
         fn call(&mut self, target: ControlAddr) -> Self::Future {
             let state = match target.addr {
                 Addr::Socket(sa) => State::make_inner(sa, &target, &mut self.inner),
-                Addr::Name(ref na) => State::Resolve {
-                    future: self.dns.resolve_one_ip(na.name()),
-                    stack: self.inner.clone(),
-                    config: target.clone(),
-                },
+                Addr::Name(ref na) => {
+                    let cloned = self.inner.clone();
+                    let stack = std::mem::replace(&mut self.inner, cloned);
+                    State::Resolve {
+                        stack,
+                        future: self.dns.resolve_one_ip(na.name()),
+                        config: target.clone(),
+                    }
+                }
             };
 
             Init { state }
