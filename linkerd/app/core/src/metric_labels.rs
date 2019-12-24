@@ -17,7 +17,6 @@ pub struct ControlLabels {
 pub struct EndpointLabels {
     pub direction: Direction,
     pub tls_id: Conditional<TlsId, tls::ReasonForNoIdentity>,
-    pub dst_logical: Option<NameAddr>,
     pub dst_concrete: Option<NameAddr>,
     pub labels: Option<String>,
 }
@@ -93,7 +92,7 @@ impl FmtLabels for RouteLabels {
 
 impl FmtLabels for EndpointLabels {
     fn fmt_labels(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let authority = self.dst_logical.as_ref().map(Authority);
+        let authority = self.dst_concrete.as_ref().map(Authority);
         (authority, &self.direction).fmt_labels(f)?;
 
         if let Some(labels) = self.labels.as_ref() {

@@ -126,7 +126,6 @@ impl tls::HasPeerIdentity for Target {
 impl Into<metric_labels::EndpointLabels> for Target {
     fn into(self) -> metric_labels::EndpointLabels {
         metric_labels::EndpointLabels {
-            dst_logical: self.dst_name.clone(),
             dst_concrete: self.dst_name,
             direction: metric_labels::Direction::In,
             tls_id: self.tls_client_id.map(metric_labels::TlsId::ClientId),

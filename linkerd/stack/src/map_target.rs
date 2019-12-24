@@ -34,6 +34,18 @@ impl<S, M: Clone> tower_layer::Layer<S> for Layer<M> {
     }
 }
 
+impl<T, S, M> super::Make<T> for Stack<S, M>
+where
+    S: super::Make<M::Target>,
+    M: MapTarget<T>,
+{
+    type Service = S::Service;
+
+    fn make(&self, target: T) -> Self::Service {
+        self.inner.make(self.map_target.map_target(target))
+    }
+}
+
 impl<T, S, M> svc::Service<T> for Stack<S, M>
 where
     S: svc::Service<M::Target>,

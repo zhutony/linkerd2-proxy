@@ -5,7 +5,9 @@
 
 #![allow(warnings, rust_2018_idioms)]
 
-pub use self::endpoint::{Concrete, Endpoint, Logical, LogicalTarget, Profile, ProfileTarget};
+pub use self::endpoint::{
+    Concrete, Endpoint, Logical, LogicalOrEndpointTarget, Profile, ProfileTarget,
+};
 use futures::future;
 use linkerd2_app_core::{
     self as core, cache, classify,
@@ -147,7 +149,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(|endpoint: &Endpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<Endpoint>();
+                .serves::<Endpoint>()
+                .push_per_make(svc::layers().boxed());
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
@@ -168,9 +171,9 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
                 ))
+                .serves::<Concrete>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
-                .makes::<Concrete>()
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
@@ -209,12 +212,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
-                .serves::<Logical>();
-
-            let fallback_stack = svc::stack(endpoint_stack);
-
-            let server_stack = svc::stack(logical_cache)
-                .serves::<Logical>()
                 .push_per_make(
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
@@ -223,11 +220,23 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(trace::layer(
                     |logical: &Logical| info_span!("logical", addr = %logical.dst),
                 ))
+                .serves::<Logical>();
+
+            let fallback_stack = svc::stack(endpoint_stack);
+
+            let server_stack = svc::stack(logical_cache)
                 .serves::<Logical>()
+                .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
+                .push_per_make(svc::layers().boxed())
+                // .push(fallback::layer(
+                //     svc::stack(endpoint_stack)
+                //         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
+                // ))
+                .serves::<(Logical, Endpoint)>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
-                .makes::<Logical>()
-                .push(router::Layer::new(LogicalTarget::from))
+                .makes::<(Logical, Endpoint)>()
+                .push(router::Layer::new(LogicalOrEndpointTarget::from))
                 .push_per_make(
                     svc::layers()
                     .push(errors::layer())

@@ -26,7 +26,7 @@ pub struct Logical {
 }
 
 #[derive(Clone, Debug)]
-pub struct LogicalTarget(tls::accept::Meta);
+pub struct LogicalOrEndpointTarget(tls::accept::Meta);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Profile(Addr);
@@ -37,7 +37,7 @@ pub struct ProfileTarget;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Concrete {
     pub dst: Addr,
-    pub logical: Logical,
+    pub settings: http::Settings,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,7 +54,7 @@ impl Endpoint {
             return false;
         }
 
-        match self.concrete.logical.settings {
+        match self.concrete.settings {
             http::Settings::Http2 => false,
             http::Settings::Http1 {
                 keep_alive: _,
@@ -79,10 +79,7 @@ impl From<SocketAddr> for Endpoint {
             identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
             concrete: Concrete {
                 dst: addr.into(),
-                logical: Logical {
-                    dst: addr.into(),
-                    settings: http::Settings::NotHttp,
-                },
+                settings: http::Settings::NotHttp,
             },
         }
     }
@@ -117,7 +114,7 @@ impl connect::HasPeerAddr for Endpoint {
 
 impl http::settings::HasSettings for Endpoint {
     fn http_settings(&self) -> &http::Settings {
-        &self.concrete.logical.settings
+        &self.concrete.settings
     }
 }
 
@@ -185,7 +182,6 @@ impl Into<EndpointLabels> for Endpoint {
     fn into(self) -> EndpointLabels {
         use linkerd2_app_core::metric_labels::{Direction, TlsId};
         EndpointLabels {
-            dst_logical: self.concrete.logical.dst.name_addr().cloned(),
             dst_concrete: self.concrete.dst.name_addr().cloned(),
             direction: Direction::Out,
             tls_id: self.identity.as_ref().map(|id| TlsId::ServerId(id.clone())),
@@ -200,16 +196,16 @@ impl std::fmt::Display for Concrete {
     }
 }
 
-// === impl LogicalTarget ===
+// === impl LogicalOrEndpointTarget ===
 
-impl From<tls::accept::Meta> for LogicalTarget {
+impl From<tls::accept::Meta> for LogicalOrEndpointTarget {
     fn from(accept: tls::accept::Meta) -> Self {
-        LogicalTarget(accept)
+        LogicalOrEndpointTarget(accept)
     }
 }
 
-impl<B> router::Key<http::Request<B>> for LogicalTarget {
-    type Key = Logical;
+impl<B> router::Key<http::Request<B>> for LogicalOrEndpointTarget {
+    type Key = (Logical, Endpoint);
 
     fn key(&self, req: &http::Request<B>) -> Self::Key {
         use linkerd2_app_core::{
@@ -226,7 +222,20 @@ impl<B> router::Key<http::Request<B>> for LogicalTarget {
 
         let settings = http::Settings::from_request(req);
 
-        Logical { dst, settings }
+        let logical = Logical {
+            dst: dst.clone(),
+            settings,
+        };
+        let fallback = Endpoint {
+            addr: self.0.addrs.target_addr(),
+            metadata: Metadata::empty(),
+            identity: Conditional::None(
+                tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into(),
+            ),
+            concrete: logical.clone().into(),
+        };
+
+        (logical, fallback)
     }
 }
 
@@ -257,7 +266,7 @@ impl From<Logical> for Concrete {
     fn from(logical: Logical) -> Self {
         Concrete {
             dst: logical.dst.clone(),
-            logical,
+            settings: logical.settings,
         }
     }
 }
