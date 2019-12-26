@@ -6,57 +6,36 @@ use http;
 use std::marker::PhantomData;
 use tracing::trace;
 
-#[derive(Debug)]
-pub struct Layer<A, B>(PhantomData<fn(A) -> B>);
+#[derive(Clone, Debug)]
+pub struct Layer(());
 
-#[derive(Debug)]
-pub struct MakeSvc<M, A, B> {
+#[derive(Clone, Debug)]
+pub struct MakeSvc<M> {
     inner: M,
-    _marker: PhantomData<fn(A) -> B>,
 }
 
-pub struct MakeFuture<F, A, B> {
+pub struct MakeFuture<F> {
     can_upgrade: bool,
     inner: F,
-    _marker: PhantomData<fn(A) -> B>,
 }
 
-pub fn layer<A, B>() -> Layer<A, B> {
-    Layer(PhantomData)
+pub fn layer() -> Layer {
+    Layer(())
 }
 
-impl<A, B> Clone for Layer<A, B> {
-    fn clone(&self) -> Self {
-        Layer(PhantomData)
-    }
-}
-
-impl<M, A, B> svc::Layer<M> for Layer<A, B> {
-    type Service = MakeSvc<M, A, B>;
+impl<M> svc::Layer<M> for Layer {
+    type Service = MakeSvc<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        MakeSvc {
-            inner,
-            _marker: PhantomData,
-        }
+        MakeSvc { inner }
     }
 }
 
 // === impl MakeSvc ===
 
-impl<M: Clone, A, B> Clone for MakeSvc<M, A, B> {
-    fn clone(&self) -> Self {
-        MakeSvc {
-            inner: self.inner.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<M, A, B> svc::Make<Endpoint> for MakeSvc<M, A, B>
+impl<M> svc::Make<Endpoint> for MakeSvc<M>
 where
     M: svc::Make<Endpoint>,
-    M::Service: svc::Service<http::Request<A>, Response = http::Response<B>>,
 {
     type Service = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
 
@@ -81,13 +60,13 @@ where
     }
 }
 
-impl<M, A, B> svc::Service<Endpoint> for MakeSvc<M, A, B>
+impl<M> svc::Service<Endpoint> for MakeSvc<M>
 where
-    M: svc::MakeService<Endpoint, http::Request<A>, Response = http::Response<B>>,
+    M: svc::Service<Endpoint>,
 {
-    type Response = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
-    type Error = M::MakeError;
-    type Future = MakeFuture<M::Future, A, B>;
+    type Response = svc::Either<orig_proto::Upgrade<M::Response>, M::Response>;
+    type Error = M::Error;
+    type Future = MakeFuture<M::Future>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.inner.poll_ready()
@@ -105,21 +84,16 @@ where
             endpoint.concrete.settings = Settings::Http2;
         }
 
-        let inner = self.inner.make_service(endpoint);
-        MakeFuture {
-            can_upgrade,
-            inner,
-            _marker: PhantomData,
-        }
+        let inner = self.inner.call(endpoint);
+        MakeFuture { can_upgrade, inner }
     }
 }
 
 // === impl MakeFuture ===
 
-impl<F, A, B> Future for MakeFuture<F, A, B>
+impl<F> Future for MakeFuture<F>
 where
     F: Future,
-    F::Item: svc::Service<http::Request<A>, Response = http::Response<B>>,
 {
     type Item = svc::Either<orig_proto::Upgrade<F::Item>, F::Item>;
     type Error = F::Error;
