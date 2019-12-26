@@ -120,14 +120,25 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 
-            let endpoint_request_layers = svc::layers()
-                .push(trace_context::layer(span_sink.clone().map(|span_sink| {
-                    SpanConverter::client(span_sink, trace_labels())
-                })))
-                .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                .per_make();
+            let endpoint_layers = svc::layers()
+                .push(tap_layer.clone())
+                .push(http::metrics::layer::<_, classify::Response>(
+                    metrics.http_endpoint.clone(),
+                ))
+                .push(
+                    svc::layers()
+                        .push(trace_context::layer(span_sink.clone().map(|span_sink| {
+                            SpanConverter::client(span_sink, trace_labels())
+                        })))
+                        .push(http::strip_header::response::layer(L5D_REMOTE_IP))
+                        .push(http::strip_header::response::layer(L5D_SERVER_ID))
+                        .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
+                        .per_make(),
+                )
+                .push(require_identity_on_endpoint::layer())
+                .push(trace::layer(|endpoint: &Endpoint| {
+                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                }));
 
             let endpoint_stack = connect_stack
                 .clone()
@@ -138,19 +149,12 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(http::normalize_uri::layer())
                 .push(orig_proto_upgrade::layer())
-                .push(tap_layer.clone())
-                .push(http::metrics::layer::<_, classify::Response>(
-                    metrics.http_endpoint.clone(),
-                ))
-                .push(endpoint_request_layers.clone())
-                .push(require_identity_on_endpoint::layer())
-                .push(trace::layer(|endpoint: &Endpoint| {
-                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }))
+                .push(endpoint_layers.clone())
                 .serves::<Endpoint>();
 
-            // Due to https://github.com/rust-lang/rust/issues/35978 (maybe?),
-            // we need to duplicate the endpoint stack definition for fallback endpoints.
+            // The client layer captures the requst body type into a
+            // phantomdata, so the stack cannot be shared directly between the
+            // balance and fallback stacks.
             let fallback_cache = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
@@ -159,15 +163,8 @@ impl<A: OrigDstAddr> Config<A> {
                     move |_| Ok(backoff.stream())
                 }))
                 .push(http::normalize_uri::layer())
-                .push(orig_proto_upgrade::layer())
-                .push(tap_layer.clone())
-                .push(http::metrics::layer::<_, classify::Response>(
-                    metrics.http_endpoint.clone(),
-                ))
-                .push(endpoint_request_layers)
-                .push(trace::layer(|endpoint: &Endpoint| {
-                    info_span!("fallback", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }))
+                .push(endpoint_layers)
+                .push(trace::layer(|_: &Endpoint| info_span!("fallback")))
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)

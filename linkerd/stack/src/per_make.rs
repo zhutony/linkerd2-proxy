@@ -32,7 +32,7 @@ impl<M, L: Clone> super::Layer<M> for Layer<L> {
 
 impl<T, L, M> super::Make<T> for PerMake<L, M>
 where
-    L: super::Layer<M::Service> + Clone,
+    L: super::Layer<M::Service>,
     M: super::Make<T>,
 {
     type Service = L::Service;
