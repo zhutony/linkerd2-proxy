@@ -252,16 +252,19 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<(Logical, Endpoint)>()
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_make(
+                    svc::layers()
+                        .push_ready_timeout(Duration::from_secs(10))
+                )
                 .makes::<(Logical, Endpoint)>()
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_make(
                     svc::layers()
-                    .push(errors::layer())
-                    .push(trace_context::layer(span_sink.map(|span_sink| {
-                        SpanConverter::server(span_sink, trace_labels())
-                    })))
-                    .push(metrics.http_handle_time.layer())
+                        .push(errors::layer())
+                        .push(trace_context::layer(span_sink.map(|span_sink| {
+                            SpanConverter::server(span_sink, trace_labels())
+                        })))
+                        .push(metrics.http_handle_time.layer())
                 )
                 .push(trace::layer(
                     |src: &tls::accept::Meta| {
@@ -289,7 +292,7 @@ impl<A: OrigDstAddr> Config<A> {
                 TransportLabels,
                 metrics.transport,
                 forward_tcp,
-                server_stack,
+                server_stack.into_inner(),
                 h2_settings,
                 drain.clone(),
                 disable_protocol_detection_for_ports.clone(),

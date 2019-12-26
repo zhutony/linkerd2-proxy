@@ -8,6 +8,7 @@ use tokio_timer as timer;
 use tower_service::Service;
 
 pub mod error;
+pub mod ready;
 pub mod stack;
 
 use self::error::{Error, Timedout};

@@ -7,12 +7,11 @@ pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
     self as stack, layer, map_target, per_make, Layer, LayerExt, Make, Shared,
 };
-pub use linkerd2_timeout::stack as timeout;
+pub use linkerd2_timeout as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
 use tower::limit::concurrency::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
-use tower::timeout::TimeoutLayer;
 pub use tower::util::{Either, Oneshot};
 pub use tower::{service_fn as mk, MakeConnection, MakeService, Service, ServiceExt};
 use tower_spawn_ready::SpawnReadyLayer;
@@ -59,6 +58,10 @@ impl<L> Layers<L> {
 
     pub fn push_lock(self) -> Layers<Pair<L, lock::Layer>> {
         self.push(lock::Layer::new())
+    }
+
+    pub fn push_ready_timeout(self, timeout: Duration) -> Layers<Pair<L, timeout::ready::Layer>> {
+        self.push(timeout::ready::Layer::new(timeout))
     }
 
     pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
@@ -122,7 +125,13 @@ impl<S> Stack<S> {
     }
 
     pub fn push_timeout(self, timeout: Duration) -> Stack<tower::timeout::Timeout<S>> {
-        self.push(TimeoutLayer::new(timeout))
+        self.push(tower::timeout::TimeoutLayer::new(timeout))
+    }
+
+    pub fn push_ready_timeout(self, timeout: Duration) -> Stack<timeout::ready::TimeoutReady<S>> {
+        self.push(layer::mk(|inner| {
+            timeout::ready::TimeoutReady::new(inner, timeout)
+        }))
     }
 
     pub fn push_per_make<L: Clone>(self, layer: L) -> Stack<per_make::PerMake<L, S>> {

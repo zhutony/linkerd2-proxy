@@ -33,6 +33,7 @@ use linkerd2_app_core::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tower_grpc::{self as grpc, generic::client::GrpcService};
 use tracing::{info, info_span};
@@ -160,6 +161,7 @@ impl<A: OrigDstAddr> Config<A> {
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_pending()
+                .push_per_make(svc::layers().push_ready_timeout(Duration::from_secs(10)))
                 .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
@@ -181,8 +183,7 @@ impl<A: OrigDstAddr> Config<A> {
                         peer.id = ?src.peer_identity,
                         target.addr = %src.addrs.target_addr(),
                     )
-                }))
-                .into_inner();
+                }));
 
             // TODO around everything...
             // let admission_control = svc::stack(dst_router)
@@ -202,7 +203,7 @@ impl<A: OrigDstAddr> Config<A> {
                 TransportLabels,
                 metrics.transport,
                 forward_tcp,
-                source_stack,
+                source_stack.into_inner(),
                 h2_settings,
                 drain.clone(),
                 disable_protocol_detection_for_ports.clone(),
