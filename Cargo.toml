@@ -9,6 +9,7 @@ members = [
     "linkerd/app",
     "linkerd/cache",
     "linkerd/conditional",
+    "linkerd/concurrency-limit",
     "linkerd/dns/name",
     "linkerd/dns",
     "linkerd/drain",

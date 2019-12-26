@@ -3,6 +3,7 @@
 
 use crate::proxy::{buffer, http, pending};
 use crate::{cache, Error};
+use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
     self as stack, layer, map_target, per_make, Layer, LayerExt, Make, Shared,
@@ -10,7 +11,6 @@ pub use linkerd2_stack::{
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
-use tower::limit::concurrency::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
 pub use tower::util::{Either, Oneshot};
 pub use tower::{service_fn as mk, MakeConnection, MakeService, Service, ServiceExt};
@@ -58,6 +58,14 @@ impl<L> Layers<L> {
 
     pub fn push_lock(self) -> Layers<Pair<L, lock::Layer>> {
         self.push(lock::Layer::new())
+    }
+
+    pub fn push_concurrency_limit(self, max: usize) -> Layers<Pair<L, concurrency_limit::Layer>> {
+        self.push(concurrency_limit::Layer::new(max))
+    }
+
+    pub fn push_load_shed<S>(self) -> Layers<Pair<L, fn(S) -> tower::load_shed::LoadShed<S>>> {
+        self.push(tower::load_shed::LoadShed::new)
     }
 
     pub fn push_ready_timeout(self, timeout: Duration) -> Layers<Pair<L, timeout::ready::Layer>> {
@@ -116,8 +124,11 @@ impl<S> Stack<S> {
         self.push(SpawnReadyLayer::new())
     }
 
-    pub fn push_concurrency_limit(self, max: usize) -> Stack<tower::limit::ConcurrencyLimit<S>> {
-        self.push(ConcurrencyLimitLayer::new(max))
+    pub fn push_concurrency_limit(
+        self,
+        max: usize,
+    ) -> Stack<concurrency_limit::ConcurrencyLimit<S>> {
+        self.push(concurrency_limit::Layer::new(max))
     }
 
     pub fn push_load_shed(self) -> Stack<tower::load_shed::LoadShed<S>> {

@@ -564,6 +564,7 @@ dependencies = [
  "libc 0.2.65 (registry+https://github.com/rust-lang/crates.io-index)",
  "linkerd2-addr 0.1.0",
  "linkerd2-cache 0.1.0",
+ "linkerd2-concurrency-limit 0.1.0",
  "linkerd2-conditional 0.1.0",
  "linkerd2-dns 0.1.0",
  "linkerd2-drain 0.1.0",
@@ -690,6 +691,16 @@ dependencies = [
  "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing-futures 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "linkerd2-concurrency-limit"
+version = "0.1.0"
+dependencies = [
+ "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
+ "linkerd2-error 0.1.0",
+ "tokio-sync 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

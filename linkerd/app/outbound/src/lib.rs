@@ -260,6 +260,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_make(
                     svc::layers()
+                        .push_concurrency_limit(buffer.max_in_flight)
+                        //.push_load_shed()
                         .push(errors::layer())
                         .push(trace_context::layer(span_sink.map(|span_sink| {
                             SpanConverter::server(span_sink, trace_labels())
@@ -272,13 +274,6 @@ impl<A: OrigDstAddr> Config<A> {
                     },
                 ))
                 .makes::<tls::accept::Meta>();
-
-            // TODO
-            // // Share a single semaphore across all requests to signal when
-            // // the proxy is overloaded.
-            // let admission_control = addr_router
-            //     .push_concurrency_limit(buffer.max_in_flight)
-            //     .push_load_shed();
 
             let forward_tcp = tcp::Forward::new(
                 svc::stack(connect_stack)
