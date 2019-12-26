@@ -4,6 +4,7 @@ use linkerd2_stack as stk;
 use std::time::Duration;
 use tokio_timer::{clock, Delay};
 use tower_service::Service;
+use tracing::{debug, trace};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Layer(Duration);
@@ -70,10 +71,12 @@ where
         }
 
         if self.timeout.is_none() {
-            self.timeout = Some(Delay::new(clock::now() + self.duration))
+            trace!(timeout = ?self.duration, "setting service acquisition timeout");
+            self.timeout = Some(Delay::new(clock::now() + self.duration));
         }
         let timeout = self.timeout.as_mut().unwrap();
         if timeout.poll().map_err(Into::<Error>::into)?.is_ready() {
+            debug!("service acquisition timeout");
             return Err(super::error::ReadyTimeout(self.duration).into());
         }
 

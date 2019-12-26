@@ -11,7 +11,6 @@ pub use linkerd2_stack::{
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
-use tower::load_shed::LoadShedLayer;
 pub use tower::util::{Either, Oneshot};
 pub use tower::{service_fn as mk, MakeConnection, MakeService, Service, ServiceExt};
 use tower_spawn_ready::SpawnReadyLayer;
@@ -44,12 +43,11 @@ impl<L> Layers<L> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Layers<Pair<L, buffer::Layer<D, Req>>>
+    pub fn push_buffer<Req>(self, bound: usize) -> Layers<Pair<L, buffer::Layer<Req>>>
     where
-        D: buffer::Deadline<Req>,
         Req: Send + 'static,
     {
-        self.push(buffer::layer(bound, d))
+        self.push(buffer::Layer::new(bound))
     }
 
     pub fn push_spawn_ready(self) -> Layers<Pair<L, SpawnReadyLayer>> {
@@ -64,8 +62,8 @@ impl<L> Layers<L> {
         self.push(concurrency_limit::Layer::new(max))
     }
 
-    pub fn push_load_shed<S>(self) -> Layers<Pair<L, fn(S) -> tower::load_shed::LoadShed<S>>> {
-        self.push(tower::load_shed::LoadShed::new)
+    pub fn push_load_shed(self) -> Layers<Pair<L, load_shed::Layer>> {
+        self.push(load_shed::Layer)
     }
 
     pub fn push_ready_timeout(self, timeout: Duration) -> Layers<Pair<L, timeout::ready::Layer>> {
@@ -112,12 +110,14 @@ impl<S> Stack<S> {
     }
 
     /// Buffer requests when when the next layer is out of capacity.
-    pub fn push_buffer<D, Req>(self, bound: usize, d: D) -> Stack<buffer::Make<S, D, Req>>
+    pub fn push_buffer<Req>(self, bound: usize) -> Stack<buffer::Buffer<S, Req>>
     where
-        D: buffer::Deadline<Req>,
         Req: Send + 'static,
+        S: Service<Req> + Send + 'static,
+        S::Error: Into<Error> + Send + Sync,
+        S::Future: Send + 'static,
     {
-        self.push(buffer::layer(bound, d))
+        self.push(buffer::Layer::new(bound))
     }
 
     pub fn push_spawn_ready(self) -> Stack<tower_spawn_ready::MakeSpawnReady<S>> {
@@ -131,8 +131,8 @@ impl<S> Stack<S> {
         self.push(concurrency_limit::Layer::new(max))
     }
 
-    pub fn push_load_shed(self) -> Stack<tower::load_shed::LoadShed<S>> {
-        self.push(LoadShedLayer::new())
+    pub fn push_load_shed(self) -> Stack<load_shed::LoadShed<S>> {
+        self.push(load_shed::Layer)
     }
 
     pub fn push_timeout(self, timeout: Duration) -> Stack<tower::timeout::Timeout<S>> {
@@ -240,5 +240,21 @@ where
 
     fn call(&mut self, t: T) -> Self::Future {
         self.0.call(t)
+    }
+}
+
+/// Proivdes a cloneable Layer, unlike tower::load_shed.
+pub mod load_shed {
+    pub use tower::load_shed::LoadShed;
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct Layer;
+
+    impl<S> super::Layer<S> for Layer {
+        type Service = LoadShed<S>;
+
+        fn layer(&self, inner: S) -> Self::Service {
+            LoadShed::new(inner)
+        }
     }
 }

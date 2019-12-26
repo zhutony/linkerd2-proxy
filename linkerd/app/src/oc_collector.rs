@@ -64,11 +64,7 @@ impl Config {
                     .push(proxy::grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
                     .push_pending()
-                    //.push_per_make(svc::lock::Layer)
-                    .push_buffer(
-                        control.buffer.max_in_flight,
-                        control.buffer.dispatch_timeout,
-                    )
+                    .push_per_make(svc::lock::Layer::new())
                     .makes::<ControlAddr>()
                     .into_inner()
                     .make(addr.clone());

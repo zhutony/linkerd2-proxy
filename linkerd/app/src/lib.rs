@@ -16,7 +16,7 @@ pub use linkerd2_app_core::{self as core, trace};
 use linkerd2_app_core::{
     config::ControlAddr,
     dns, drain,
-    svc::Make,
+    svc::{self, Make},
     transport::{OrigDstAddr, SysOrigDstAddr},
     Error,
 };
@@ -118,7 +118,6 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                 classify, control,
                 proxy::{grpc, http},
                 reconnect,
-                svc::{self, LayerExt},
                 transport::{connect, tls},
             };
 
@@ -128,7 +127,8 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                 // XXX This is unfortunate. But we don't daemonize the service into a
                 // task in the build, so we'd have to name the motherfucker. And that's
                 // not happening today. Really, we should daemonize the whole client
-                // into a task so consumers can be ignorant.
+                // into a task so consumers can be ignorant. This woudld also
+                // probably enable the use of a lock.
                 let svc = svc::stack(connect::svc(dst.control.connect.keepalive))
                     .push(tls::client::layer(identity.local()))
                     .push_timeout(dst.control.connect.timeout)
@@ -139,13 +139,13 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                         move |_| Ok(backoff.stream())
                     }))
                     .push(http::metrics::layer::<_, classify::Response>(metrics))
-                    .push(grpc::req_body_as_payload::layer().per_make())
                     .push(control::add_origin::layer())
                     .push_pending()
-                    //.push_per_make(svc::lock::Layer)
-                    .push_buffer(
-                        dst.control.buffer.max_in_flight,
-                        dst.control.buffer.dispatch_timeout,
+                    // TODO .push_per_make(svc::lock::Layer::new())
+                    .push_per_make(
+                        svc::layers()
+                            .push(grpc::req_body_as_payload::layer())
+                            .push_buffer(dst.control.buffer.max_in_flight),
                     )
                     .makes::<ControlAddr>()
                     .into_inner()

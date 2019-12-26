@@ -261,7 +261,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_make(
                     svc::layers()
                         .push_concurrency_limit(buffer.max_in_flight)
-                        //.push_load_shed()
+                        .push_load_shed()
                         .push(errors::layer())
                         .push(trace_context::layer(span_sink.map(|span_sink| {
                             SpanConverter::server(span_sink, trace_labels())

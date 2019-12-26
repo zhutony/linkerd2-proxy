@@ -6,6 +6,7 @@ use linkerd2_error::Error;
 use std::sync::Arc;
 use tokio_sync::semaphore::{Permit, Semaphore};
 use tower::Service;
+use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Layer {
@@ -86,6 +87,7 @@ where
     type Future = ResponseFuture<S::Future>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        trace!(available = %self.limit.semaphore.available_permits(), "acquiring permit");
         try_ready!(self
             .limit
             .permit
@@ -156,6 +158,7 @@ where
 
 impl<T> Drop for ResponseFuture<T> {
     fn drop(&mut self) {
+        trace!(available = %self.semaphore.available_permits() + 1, "releasing permit");
         self.semaphore.add_permits(1);
     }
 }

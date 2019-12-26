@@ -38,6 +38,12 @@ impl std::error::Error for Timedout {}
 
 // === ReadyTimeout ===
 
+impl ReadyTimeout {
+    pub fn duration(&self) -> Duration {
+        self.0
+    }
+}
+
 impl fmt::Display for ReadyTimeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

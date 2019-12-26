@@ -1,8 +1,9 @@
 #![deny(warnings, rust_2018_idioms)]
 
-use futures::{future, try_ready, Future, Poll};
+use futures::{future, Async, Future, Poll};
 use linkerd2_error::Error;
 use tokio::sync::lock;
+use tracing::trace;
 
 pub trait CloneError {
     type Error: Into<Error> + Clone;
@@ -87,7 +88,14 @@ where
                 unreachable!("must not lock on error");
             }
 
-            let locked = try_ready!(Ok::<_, Error>(self.lock.poll_lock()));
+            let locked = match self.lock.poll_lock() {
+                Async::Ready(locked) => locked,
+                Async::NotReady => {
+                    trace!("awaiting lock");
+                    return Ok(Async::NotReady);
+                }
+            };
+            trace!("locked; awaiting readiness");
             if let State::Error(ref e) = *locked {
                 return Err(e.clone().into());
             }
