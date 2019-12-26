@@ -1,9 +1,9 @@
 #![deny(warnings, rust_2018_idioms)]
 
-use futures::{Future, Poll};
+use futures::{Async, Future, Poll};
 use linkerd2_error::Error;
 use tower::util::{Oneshot, ServiceExt};
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// A fallback layer composing two service builders.
 ///
@@ -128,14 +128,18 @@ where
         loop {
             self.state = match self.state {
                 State::Primary(ref mut i, ref mut f) => match i.poll() {
-                    Ok(r) => return Ok(r),
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Ok(Async::Ready(v)) => {
+                        trace!("primary succeeded");
+                        return Ok(Async::Ready(v));
+                    }
                     Err(e) => {
                         let error = e.into();
                         if !(self.predicate)(&error) {
                             return Err(error);
                         }
 
-                        trace!(%error, "falling back");
+                        debug!(%error, "falling back");
                         State::Fallback(f.take().unwrap())
                     }
                 },
