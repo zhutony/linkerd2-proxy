@@ -69,6 +69,10 @@ impl<L> Layers<L> {
         self.push(http::boxed::Layer::new())
     }
 
+    pub fn push_per_make<O: Clone>(self, layer: O) -> Layers<Pair<L, per_make::Layer<O>>> {
+        self.push(per_make::layer(layer))
+    }
+
     pub fn per_make(self) -> Layers<per_make::Layer<L>> {
         Layers(per_make::layer(self.0))
     }

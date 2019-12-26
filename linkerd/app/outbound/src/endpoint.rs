@@ -26,7 +26,7 @@ pub struct Logical {
 }
 
 #[derive(Clone, Debug)]
-pub struct LogicalOrEndpointTarget(tls::accept::Meta);
+pub struct LogicalOrFallbackTarget(tls::accept::Meta);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Profile(Addr);
@@ -196,15 +196,15 @@ impl std::fmt::Display for Concrete {
     }
 }
 
-// === impl LogicalOrEndpointTarget ===
+// === impl LogicalOrFallbackTarget ===
 
-impl From<tls::accept::Meta> for LogicalOrEndpointTarget {
+impl From<tls::accept::Meta> for LogicalOrFallbackTarget {
     fn from(accept: tls::accept::Meta) -> Self {
-        LogicalOrEndpointTarget(accept)
+        LogicalOrFallbackTarget(accept)
     }
 }
 
-impl<B> router::Key<http::Request<B>> for LogicalOrEndpointTarget {
+impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
     type Key = (Logical, Endpoint);
 
     fn key(&self, req: &http::Request<B>) -> Self::Key {

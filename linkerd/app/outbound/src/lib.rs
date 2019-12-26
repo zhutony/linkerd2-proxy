@@ -6,7 +6,7 @@
 #![allow(warnings, rust_2018_idioms)]
 
 pub use self::endpoint::{
-    Concrete, Endpoint, Logical, LogicalOrEndpointTarget, Profile, ProfileTarget,
+    Concrete, Endpoint, Logical, LogicalOrFallbackTarget, Profile, ProfileTarget,
 };
 use futures::future;
 use linkerd2_app_core::{
@@ -120,7 +120,15 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 
-            // Instantiates an HTTP client for for a `client::Config`
+            let endpoint_request_layers = svc::layers()
+                .push(trace_context::layer(span_sink.clone().map(|span_sink| {
+                    SpanConverter::client(span_sink, trace_labels())
+                })))
+                .push(http::strip_header::response::layer(L5D_REMOTE_IP))
+                .push(http::strip_header::response::layer(L5D_SERVER_ID))
+                .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
+                .per_make();
+
             let endpoint_stack = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
@@ -128,29 +136,42 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push_per_make(trace_context::layer(
-                    span_sink
-                        .clone()
-                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
-                ))
                 .push(http::normalize_uri::layer())
-                .push_per_make(
-                    svc::layers()
-                        .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                        .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                        .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                )
                 .push(orig_proto_upgrade::layer())
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint.clone(),
                 ))
+                .push(endpoint_request_layers.clone())
                 .push(require_identity_on_endpoint::layer())
                 .push(trace::layer(|endpoint: &Endpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<Endpoint>()
-                .push_per_make(svc::layers().boxed());
+                .serves::<Endpoint>();
+
+            // Due to https://github.com/rust-lang/rust/issues/35978 (maybe?),
+            // we need to duplicate the endpoint stack definition for fallback endpoints.
+            let fallback_cache = connect_stack
+                .clone()
+                .push(http::client::layer(connect.h2_settings))
+                .push(reconnect::layer({
+                    let backoff = connect.backoff.clone();
+                    move |_| Ok(backoff.stream())
+                }))
+                .push(http::normalize_uri::layer())
+                .push(orig_proto_upgrade::layer())
+                .push(tap_layer.clone())
+                .push(http::metrics::layer::<_, classify::Response>(
+                    metrics.http_endpoint.clone(),
+                ))
+                .push(endpoint_request_layers)
+                .push(trace::layer(|endpoint: &Endpoint| {
+                    info_span!("fallback", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                }))
+                .push_pending()
+                .push_per_make(svc::lock::Layer::new())
+                .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Endpoint>();
 
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
@@ -222,50 +243,21 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>();
 
-            let fallback_stack = connect_stack
-                .clone()
-                .push(http::client::layer(connect.h2_settings))
-                .push(reconnect::layer({
-                    let backoff = connect.backoff.clone();
-                    move |_| Ok(backoff.stream())
-                }))
-                .push_per_make(trace_context::layer(
-                    span_sink
-                        .clone()
-                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
-                ))
-                .push(http::normalize_uri::layer())
-                .push_per_make(
-                    svc::layers()
-                        .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                        .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                        .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
-                )
-                .push(orig_proto_upgrade::layer())
-                .push(tap_layer.clone())
-                .push(http::metrics::layer::<_, classify::Response>(
-                    metrics.http_endpoint,
-                ))
-                .push(require_identity_on_endpoint::layer())
-                .push(trace::layer(|endpoint: &Endpoint| {
-                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }))
-                .serves::<Endpoint>()
-                .push_per_make(svc::layers().boxed());
-
             let server_stack = svc::stack(logical_cache)
                 .serves::<Logical>()
                 .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
                 .push_per_make(svc::layers().boxed())
                 .push(fallback::layer(
-                    fallback_stack
+                    fallback_cache
                         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
+                        .push_per_make(svc::layers().boxed())
+                        .into_inner()
                 ))
                 .serves::<(Logical, Endpoint)>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .makes::<(Logical, Endpoint)>()
-                .push(router::Layer::new(LogicalOrEndpointTarget::from))
+                .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_make(
                     svc::layers()
                     .push(errors::layer())

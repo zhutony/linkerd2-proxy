@@ -20,23 +20,9 @@ pub struct Layer<A, B> {
     _marker: std::marker::PhantomData<fn(A) -> B>,
 }
 
-pub struct Make<M, A, B> {
-    inner: M,
-    _marker: std::marker::PhantomData<fn(A) -> B>,
-}
-
 impl<A, B> Clone for Layer<A, B> {
     fn clone(&self) -> Self {
         Self {
-            _marker: self._marker,
-        }
-    }
-}
-
-impl<M: Clone, A, B> Clone for Make<M, A, B> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
             _marker: self._marker,
         }
     }
