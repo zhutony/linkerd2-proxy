@@ -1,7 +1,7 @@
 // Possibly unused, but useful during development.
 #![allow(dead_code)]
 
-use crate::proxy::{buffer, http, pending};
+use crate::proxy::{buffer, http, pending, ready};
 use crate::{cache, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
@@ -100,9 +100,12 @@ impl<S> Stack<S> {
         Stack(layer.layer(self.0))
     }
 
-    /// Buffer requests when when the next layer is out of capacity.
     pub fn push_pending(self) -> Stack<pending::MakePending<S>> {
         self.push(pending::layer())
+    }
+
+    pub fn push_ready<Req>(self) -> Stack<ready::MakeReady<S, Req>> {
+        self.push(ready::Layer::new())
     }
 
     pub fn push_lock(self) -> Stack<lock::Lock<S>> {

@@ -242,13 +242,12 @@ impl<A: OrigDstAddr> Config<A> {
 
             let server_stack = svc::stack(logical_cache)
                 .serves::<Logical>()
-                // FIXME we need to reverse the polarity of the push_pending
-                // within the spawn_cache so that the service's readiness is
-                // taken into account for the purposes of falback.
+                .push_ready()
                 .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
                 .push_per_make(svc::layers().boxed())
                 .push(fallback::layer(
                     fallback_cache
+                        .push_ready()
                         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
                         .push_per_make(svc::layers().boxed())
                         .into_inner()

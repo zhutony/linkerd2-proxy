@@ -13,6 +13,7 @@ pub use linkerd2_proxy_tcp as tcp;
 
 pub mod buffer;
 pub mod pending;
+pub mod ready;
 pub mod server;
 
 pub use self::server::Server;
