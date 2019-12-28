@@ -147,7 +147,7 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                //.push(orig_proto_upgrade::layer())
+                .push(orig_proto_upgrade::layer())
                 .push(endpoint_layers.clone())
                 .serves::<Endpoint>();
 

@@ -50,10 +50,14 @@ where
             );
             endpoint.concrete.settings = Settings::Http2;
         }
+        let was_absolute = endpoint.concrete.settings.was_absolute_form();
+
         let inner = self.inner.make(endpoint);
 
         if can_upgrade {
-            svc::Either::A(orig_proto::Upgrade::new(inner))
+            let mut upgrade = orig_proto::Upgrade::new(inner);
+            upgrade.absolute_form = was_absolute;
+            svc::Either::A(upgrade)
         } else {
             svc::Either::B(inner)
         }
