@@ -346,7 +346,9 @@ macro_rules! generate_tests {
                     Response::default()
                 }).run();
 
-                let proxy = proxy::new().inbound(srv).run();
+                let ctrl = controller::new();
+                ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+                let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
                 let client = $make_client(proxy.inbound, "disco.test.svc.cluster.local");
                 let rsp = client.request(client.request_builder("/strip").header(REMOTE_IP_HEADER, IP_1));
 
