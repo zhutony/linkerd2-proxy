@@ -70,16 +70,15 @@ fn add_a_dst_override() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    let ctrl = ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
 
     let leaf = "leaf";
     let leaf_svc = Service::new(leaf);
-    let ctrl = ctrl.destination_and_close(&leaf_svc.authority(), leaf_svc.svc.addr);
+    ctrl.destination_and_close(&leaf_svc.authority(), leaf_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
 
-    let ctrl = ctrl.run();
-    let proxy = proxy::new().controller(ctrl).run();
+    let proxy = proxy::new().controller(ctrl.run()).run();
 
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");
@@ -115,19 +114,18 @@ fn add_multiple_dst_overrides() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    let ctrl = ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
 
     let leaf_a = "leaf-a";
     let leaf_a_svc = Service::new(leaf_a);
-    let ctrl = ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
+    ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
     let leaf_b = "leaf-b";
     let leaf_b_svc = Service::new(leaf_b);
-    let ctrl = ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
+    ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
 
-    let ctrl = ctrl.run();
-    let proxy = proxy::new().controller(ctrl).run();
+    let proxy = proxy::new().controller(ctrl.run()).run();
 
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");
@@ -168,13 +166,13 @@ fn set_a_dst_override_weight_to_zero() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    let ctrl = ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
     let leaf_a = "leaf-a";
     let leaf_a_svc = Service::new(leaf_a);
-    let ctrl = ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
+    ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
     let leaf_b = "leaf-b";
     let leaf_b_svc = Service::new(leaf_b);
-    let ctrl = ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
+    ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(profile(
@@ -185,8 +183,7 @@ fn set_a_dst_override_weight_to_zero() {
         ],
     ));
 
-    let ctrl = ctrl.run();
-    let proxy = proxy::new().controller(ctrl).run();
+    let proxy = proxy::new().controller(ctrl.run()).run();
 
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");
@@ -252,8 +249,7 @@ fn set_all_dst_override_weights_to_zero() {
         ],
     ));
 
-    let ctrl = ctrl.run();
-    let proxy = proxy::new().controller(ctrl).run();
+    let proxy = proxy::new().controller(ctrl.run()).run();
 
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");
@@ -311,8 +307,7 @@ fn remove_a_dst_override() {
         vec![controller::dst_override(leaf_svc.authority(), 10000)],
     ));
 
-    let ctrl_run = ctrl.run();
-    let proxy = proxy::new().controller(ctrl_run).run();
+    let proxy = proxy::new().controller(ctrl.run()).run();
 
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");

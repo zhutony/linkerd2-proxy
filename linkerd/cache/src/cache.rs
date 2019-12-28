@@ -144,7 +144,7 @@ mod tests {
 
             cache.insert(2, 3);
             assert_eq!(cache.values.len(), 2);
-            assert!(!cache.can_insert());
+            assert_eq!(cache.available(), 0);
 
             Ok::<_, ()>(())
         }))
