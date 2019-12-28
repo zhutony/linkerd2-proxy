@@ -791,6 +791,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
+        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
 
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
@@ -817,7 +818,10 @@ mod proxy_to_proxy {
             })
             .run();
 
-        let proxy = proxy::new().inbound(srv).run();
+        let ctrl = controller::new();
+        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+
+        let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
         let client = client::http1(proxy.inbound, "disco.test.svc.cluster.local");
 
@@ -868,7 +872,10 @@ mod proxy_to_proxy {
             })
             .run();
 
-        let proxy = proxy::new().inbound(srv).run();
+        let ctrl = controller::new();
+        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+
+        let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
         let client = client::http1(proxy.inbound, "disco.test.svc.cluster.local");
 
