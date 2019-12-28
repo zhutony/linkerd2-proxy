@@ -147,8 +147,7 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push(http::normalize_uri::layer())
-                .push(orig_proto_upgrade::layer())
+                //.push(orig_proto_upgrade::layer())
                 .push(endpoint_layers.clone())
                 .serves::<Endpoint>();
 
@@ -222,6 +221,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             let logical_cache = svc::stack(profile_stack)
                 .serves::<Logical>()
+                .push(http::normalize_uri::layer())
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 .push(http::canonicalize::Layer::new(
                     dns_resolver,

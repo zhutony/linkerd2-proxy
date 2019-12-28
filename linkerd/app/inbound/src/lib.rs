@@ -114,10 +114,22 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
+                .push_per_make(trace_context::layer(
+                    span_sink
+                        .clone()
+                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
+                ))
                 .serves::<Endpoint>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .makes::<Endpoint>()
+                .push(trace::layer(|ep: &Endpoint| {
+                    info_span!(
+                        "endpoint",
+                        port = %ep.port,
+                        http = ?ep.settings,
+                    )
+                }))
                 .spawn_cache(router_capacity, router_max_idle_age);
 
             // Determine the target for each request, obtain a profile route for
@@ -125,11 +137,6 @@ impl<A: OrigDstAddr> Config<A> {
             let profile_cache = svc::stack(endpoint_cache)
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
-                .push_per_make(trace_context::layer(
-                    span_sink
-                        .clone()
-                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
-                ))
                 .push(normalize_uri::layer())
                 .push(tap_layer)
                 .push(http_metrics::layer::<_, classify::Response>(
@@ -161,8 +168,18 @@ impl<A: OrigDstAddr> Config<A> {
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_pending()
-                .push_per_make(svc::layers().push_ready_timeout(Duration::from_secs(10)))
-                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push_per_make(
+                    svc::layers()
+                        .push_ready_timeout(Duration::from_secs(10))
+                        .push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                )
+                .push(trace::layer(|t: &Target| {
+                    info_span!(
+                        "target",
+                        name = ?t.dst_name,
+                        http = ?t.http_settings,
+                    )
+                }))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
                 .push_per_make(
@@ -186,12 +203,6 @@ impl<A: OrigDstAddr> Config<A> {
                         target.addr = %src.addrs.target_addr(),
                     )
                 }));
-
-            // TODO around everything...
-            // let admission_control = svc::stack(dst_router)
-            //     .push_concurrency_limit(buffer.max_in_flight)
-            //     .push_load_shed()
-            //     .into_inner();
 
             let forward_tcp = tcp::Forward::new(
                 svc::stack(connect_stack)

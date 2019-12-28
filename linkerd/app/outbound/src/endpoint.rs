@@ -118,6 +118,19 @@ impl http::settings::HasSettings for Endpoint {
     }
 }
 
+impl http::normalize_uri::ShouldNormalizeUri for Endpoint {
+    fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
+        if let http::Settings::Http1 {
+            was_absolute_form: false,
+            ..
+        } = self.concrete.settings
+        {
+            return Some(self.concrete.dst.to_authority());
+        }
+        None
+    }
+}
+
 impl tap::Inspect for Endpoint {
     fn src_addr<B>(&self, req: &http::Request<B>) -> Option<SocketAddr> {
         req.extensions()
@@ -162,6 +175,7 @@ impl MapEndpoint<Concrete, Metadata> for FromMetadata {
     type Out = Endpoint;
 
     fn map_endpoint(&self, concrete: &Concrete, addr: SocketAddr, metadata: Metadata) -> Endpoint {
+        tracing::trace!(%concrete, %addr, ?metadata, "endpoint");
         let identity = metadata
             .identity()
             .cloned()
@@ -269,6 +283,19 @@ impl<'t> From<&'t Logical> for ::http::header::HeaderValue {
     fn from(logical: &'t Logical) -> Self {
         ::http::header::HeaderValue::from_str(&logical.dst.to_string())
             .expect("addr must be a valid header")
+    }
+}
+
+impl http::normalize_uri::ShouldNormalizeUri for Logical {
+    fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
+        if let http::Settings::Http1 {
+            was_absolute_form: false,
+            ..
+        } = self.settings
+        {
+            return Some(self.dst.to_authority());
+        }
+        None
     }
 }
 

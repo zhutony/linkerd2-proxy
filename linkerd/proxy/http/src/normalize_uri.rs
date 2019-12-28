@@ -1,63 +1,58 @@
-use super::{
-    h1,
-    settings::{HasSettings, Settings},
-};
+use super::h1;
 use futures::{try_ready, Future, Poll};
-use http;
+use http::uri::Authority;
 use linkerd2_stack::{layer, Make};
 
+pub trait ShouldNormalizeUri {
+    fn should_normalize_uri(&self) -> Option<Authority>;
+}
+
 #[derive(Clone, Debug)]
-pub struct Stack<N> {
+pub struct MakeNormalizeUri<N> {
     inner: N,
 }
 
 pub struct MakeFuture<F> {
     inner: F,
-    should_normalize_uri: bool,
+    authority: Option<Authority>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Service<S> {
+pub struct NormalizeUri<S> {
     inner: S,
-}
-
-fn should_normalize_uri(settings: &Settings) -> bool {
-    !settings.is_http2() && !settings.was_absolute_form()
+    authority: Option<Authority>,
 }
 
 // === impl Layer ===
 
-pub fn layer<M>() -> impl layer::Layer<M, Service = Stack<M>> + Copy {
-    layer::mk(|inner| Stack { inner })
+pub fn layer<M>() -> impl layer::Layer<M, Service = MakeNormalizeUri<M>> + Copy {
+    layer::mk(|inner| MakeNormalizeUri { inner })
 }
 
-// === impl Stack ===
+// === impl MakeNormalizeUri ===
 
-impl<T, M> Make<T> for Stack<M>
+impl<T, M> Make<T> for MakeNormalizeUri<M>
 where
-    T: HasSettings,
+    T: ShouldNormalizeUri,
     M: Make<T>,
 {
-    type Service = tower::util::Either<Service<M::Service>, M::Service>;
+    type Service = NormalizeUri<M::Service>;
 
     fn make(&self, target: T) -> Self::Service {
-        let should_normalize_uri = should_normalize_uri(target.http_settings());
-        let inner = self.inner.make(target);
+        let authority = target.should_normalize_uri();
+        tracing::trace!(?authority, "make");
 
-        if should_normalize_uri {
-            tower::util::Either::A(Service { inner })
-        } else {
-            tower::util::Either::B(inner)
-        }
+        let inner = self.inner.make(target);
+        NormalizeUri { inner, authority }
     }
 }
 
-impl<T, M> tower::Service<T> for Stack<M>
+impl<T, M> tower::Service<T> for MakeNormalizeUri<M>
 where
-    T: HasSettings,
+    T: ShouldNormalizeUri,
     M: tower::Service<T>,
 {
-    type Response = tower::util::Either<Service<M::Response>, M::Response>;
+    type Response = NormalizeUri<M::Response>;
     type Error = M::Error;
     type Future = MakeFuture<M::Future>;
 
@@ -66,12 +61,12 @@ where
     }
 
     fn call(&mut self, target: T) -> Self::Future {
-        let should_normalize_uri = should_normalize_uri(target.http_settings());
-        let inner = self.inner.call(target);
+        let authority = target.should_normalize_uri();
+        tracing::trace!(?authority, "make");
 
         MakeFuture {
-            inner,
-            should_normalize_uri,
+            authority,
+            inner: self.inner.call(target),
         }
     }
 }
@@ -79,23 +74,22 @@ where
 // === impl MakeFuture ===
 
 impl<F: Future> Future for MakeFuture<F> {
-    type Item = tower::util::Either<Service<F::Item>, F::Item>;
+    type Item = NormalizeUri<F::Item>;
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = try_ready!(self.inner.poll());
-
-        if self.should_normalize_uri {
-            Ok(tower::util::Either::A(Service { inner }).into())
-        } else {
-            Ok(tower::util::Either::B(inner).into())
-        }
+        let svc = NormalizeUri {
+            inner,
+            authority: self.authority.take(),
+        };
+        Ok(svc.into())
     }
 }
 
-// === impl Service ===
+// === impl NormalizeUri ===
 
-impl<S, B> tower::Service<http::Request<B>> for Service<S>
+impl<S, B> tower::Service<http::Request<B>> for NormalizeUri<S>
 where
     S: tower::Service<http::Request<B>>,
 {
@@ -108,11 +102,14 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        debug_assert!(
-            request.version() != http::Version::HTTP_2,
-            "normalize_uri must only be applied to HTTP/1"
-        );
-        h1::normalize_our_view_of_uri(&mut request);
+        if let Some(ref auth) = self.authority {
+            debug_assert!(
+                request.version() != http::Version::HTTP_2,
+                "normalize_uri must only be applied to HTTP/1"
+            );
+            h1::set_authority(request.uri_mut(), auth.clone());
+        }
+
         self.inner.call(request)
     }
 }

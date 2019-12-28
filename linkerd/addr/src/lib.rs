@@ -74,7 +74,7 @@ impl Addr {
         }
     }
 
-    pub fn as_authority(&self) -> http::uri::Authority {
+    pub fn to_authority(&self) -> http::uri::Authority {
         match self {
             Addr::Name(n) => n.as_authority(),
             Addr::Socket(a) => http::uri::Authority::from_str(&format!("{}", a))

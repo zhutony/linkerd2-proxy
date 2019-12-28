@@ -28,8 +28,8 @@ pub struct Profile(Addr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Endpoint {
-    port: u16,
-    settings: http::Settings,
+    pub port: u16,
+    pub settings: http::Settings,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +110,24 @@ impl profiles::WithRoute for Profile {
 }
 
 // === impl Target ===
+
+impl http::normalize_uri::ShouldNormalizeUri for Target {
+    fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
+        if let http::Settings::Http1 {
+            was_absolute_form: false,
+            ..
+        } = self.http_settings
+        {
+            return Some(
+                self.dst_name
+                    .as_ref()
+                    .map(|dst| dst.as_authority())
+                    .unwrap_or_else(|| Addr::from(self.addr).to_authority()),
+            );
+        }
+        None
+    }
+}
 
 impl http::settings::HasSettings for Target {
     fn http_settings(&self) -> &http::Settings {

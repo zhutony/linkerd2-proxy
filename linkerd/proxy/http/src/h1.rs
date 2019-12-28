@@ -56,7 +56,7 @@ pub fn authority_from_host<B>(req: &http::Request<B>) -> Option<Authority> {
     super::authority_from_header(req, HOST)
 }
 
-fn set_authority(uri: &mut http::Uri, auth: Authority) {
+pub fn set_authority(uri: &mut http::Uri, auth: Authority) {
     let mut parts = Parts::from(mem::replace(uri, Uri::default()));
 
     parts.authority = Some(auth);
