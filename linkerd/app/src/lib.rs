@@ -125,8 +125,8 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
             let dns = dns.resolver.clone();
             info_span!("dst").in_scope(|| {
                 // XXX This is unfortunate. But we don't daemonize the service into a
-                // task in the build, so we'd have to name the motherfucker. And that's
-                // not happening today. Really, we should daemonize the whole client
+                // task in the build, so we'd have to name it. And that's not
+                // happening today. Really, we should daemonize the whole client
                 // into a task so consumers can be ignorant. This woudld also
                 // probably enable the use of a lock.
                 let svc = svc::stack(connect::svc(dst.control.connect.keepalive))
