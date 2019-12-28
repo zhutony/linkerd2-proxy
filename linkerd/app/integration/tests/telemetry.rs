@@ -48,8 +48,7 @@ impl Fixture {
     fn outbound_with_server(srv: server::Listening) -> Self {
         let ctrl = controller::new();
         ctrl.default_profile_and_close("test.test.svc.cluster.local");
-            ctrl.destination_and_close("tele.test.svc.cluster.local", srv.addr)
-            ;
+        ctrl.destination_and_close("tele.test.svc.cluster.local", srv.addr);
         let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
         let metrics = client::http1(proxy.metrics, "localhost");
 
@@ -82,7 +81,10 @@ impl TcpFixture {
     fn inbound() -> Self {
         let ctrl = controller::new();
         ctrl.default_profile_and_close("test.test.svc.cluster.local");
-        let proxy = proxy::new().controller(ctrl.run()).inbound(TcpFixture::server()).run();
+        let proxy = proxy::new()
+            .controller(ctrl.run())
+            .inbound(TcpFixture::server())
+            .run();
 
         let client = client::tcp(proxy.inbound);
         let metrics = client::http1(proxy.metrics, "localhost");
@@ -96,7 +98,10 @@ impl TcpFixture {
     fn outbound() -> Self {
         let ctrl = controller::new();
         ctrl.default_profile_and_close("test.test.svc.cluster.local");
-        let proxy = proxy::new().controller(ctrl.run()).outbound(TcpFixture::server()).run();
+        let proxy = proxy::new()
+            .controller(ctrl.run())
+            .outbound(TcpFixture::server())
+            .run();
 
         let client = client::tcp(proxy.outbound);
         let metrics = client::http1(proxy.metrics, "localhost");
@@ -694,8 +699,7 @@ fn metrics_have_no_double_commas() {
 
     let ctrl = controller::new();
     ctrl.default_profile_and_close("tele.test.svc.cluster.local");
-    ctrl.destination_and_close("tele.test.svc.cluster.local", outbound_srv.addr)
-        ;
+    ctrl.destination_and_close("tele.test.svc.cluster.local", outbound_srv.addr);
     let proxy = proxy::new()
         .controller(ctrl.run())
         .inbound(inbound_srv)
