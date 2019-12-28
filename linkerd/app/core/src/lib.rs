@@ -52,7 +52,10 @@ const DEFAULT_PORT: u16 = 80;
 
 pub fn http_request_l5d_override_dst_addr<B>(req: &http::Request<B>) -> Result<Addr, addr::Error> {
     proxy::http::authority_from_header(req, DST_OVERRIDE_HEADER)
-        .ok_or(addr::Error::InvalidHost)
+        .ok_or_else(|| {
+            tracing::trace!("{} not in request headers", DST_OVERRIDE_HEADER);
+            addr::Error::InvalidHost
+        })
         .and_then(|a| Addr::from_authority_and_default_port(&a, DEFAULT_PORT))
 }
 

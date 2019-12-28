@@ -211,14 +211,29 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
         use linkerd2_app_core::{
             http_request_authority_addr, http_request_host_addr, http_request_l5d_override_dst_addr,
         };
+        tracing::debug!(headers = ?req.headers());
         let dst = http_request_l5d_override_dst_addr(req)
-            .map(|override_addr| {
-                tracing::debug!("using dst-override");
-                override_addr
+            .map(|addr| {
+                tracing::debug!(%addr, "using dst-override");
+                addr
             })
-            .or_else(|_| http_request_authority_addr(req))
-            .or_else(|_| http_request_host_addr(req))
-            .unwrap_or_else(|_| self.0.addrs.target_addr().into());
+            .or_else(|_| {
+                http_request_authority_addr(req).map(|addr| {
+                    tracing::debug!(%addr, "using authority");
+                    addr
+                })
+            })
+            .or_else(|_| {
+                http_request_host_addr(req).map(|addr| {
+                    tracing::debug!(%addr, "using host");
+                    addr
+                })
+            })
+            .unwrap_or_else(|_| {
+                let addr = self.0.addrs.target_addr();
+                tracing::debug!(%addr, "using socket target");
+                addr.into()
+            });
 
         let settings = http::Settings::from_request(req);
 
@@ -229,6 +244,7 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
         let fallback = Endpoint {
             addr: self.0.addrs.target_addr(),
             metadata: Metadata::empty(),
+            // TODO set from header
             identity: Conditional::None(
                 tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into(),
             ),

@@ -1,6 +1,6 @@
 use crate::dns;
 use crate::proxy::http::{profiles, retry::Budget};
-use futures::{Async, Future, Poll, Stream};
+use futures::{try_ready, Async, Future, Poll, Stream};
 use http;
 use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_error::Never;
@@ -8,7 +8,7 @@ use linkerd2_proxy_api::destination as api;
 use regex::Regex;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio_timer::{clock, Delay};
 use tower_grpc::{self as grpc, generic::client::GrpcService, Body, BoxBody};
 use tracing::{debug, error, trace, warn};
@@ -24,31 +24,34 @@ pub struct Client<T> {
 
 pub struct Rx {
     rx: watch::Receiver<profiles::Routes>,
-    _hangup: oneshot::Sender<Never>,
 }
 
 pub type Receiver = watch::Receiver<profiles::Routes>;
 
 type Sender = watch::Sender<profiles::Routes>;
 
-pub enum ProfileFuture<S: GrpcService<BoxBody>> {
+pub struct ProfileFuture<S: GrpcService<BoxBody>>(ProfileFutureInner<S>);
+
+enum ProfileFutureInner<S: GrpcService<BoxBody>> {
     Skipped,
-    Pending {
-        future: grpc::client::server_streaming::ResponseFuture<api::DestinationProfile, S::Future>,
-        backoff: Duration,
-        request: api::GetDestination,
-        service: api::client::Destination<S>,
-    },
+    Pending(Option<Inner<S>>),
 }
 
 struct Daemon<T>
 where
     T: GrpcService<BoxBody>,
 {
+    tx: Sender,
+    inner: Inner<T>,
+}
+
+struct Inner<T>
+where
+    T: GrpcService<BoxBody>,
+{
     backoff: Duration,
     service: api::client::Destination<T>,
     state: State<T>,
-    tx: Sender,
     request: api::GetDestination,
 }
 
@@ -107,11 +110,11 @@ where
     fn call(&mut self, dst: Addr) -> Self::Future {
         let dst = match dst {
             Addr::Name(n) => n,
-            Addr::Socket(_) => return ProfileFuture::Skipped,
+            Addr::Socket(_) => return ProfileFuture(ProfileFutureInner::Skipped),
         };
         if !self.suffixes.iter().any(|s| s.contains(dst.name())) {
             debug!("name not in profile suffixes");
-            return ProfileFuture::Skipped;
+            return ProfileFuture(ProfileFutureInner::Skipped);
         }
 
         let request = api::GetDestination {
@@ -120,17 +123,14 @@ where
             ..Default::default()
         };
 
-        debug!("watching routes");
-        let future = self
-            .service
-            .get_profile(grpc::Request::new(request.clone()));
-
-        ProfileFuture::Pending {
-            future,
+        let daemon = Inner {
             request,
-            service: self.service.clone(),
             backoff: self.backoff,
-        }
+            service: self.service.clone(),
+            state: State::Disconnected,
+        };
+
+        ProfileFuture(ProfileFutureInner::Pending(Some(daemon)))
     }
 }
 
@@ -145,34 +145,19 @@ where
     type Error = grpc::Status;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self {
-            ProfileFuture::Skipped => Ok(None.into()),
-            ProfileFuture::Pending {
-                future,
-                service,
-                request,
-                backoff,
-            } => {
-                let response = match future.poll() {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Err(status) => {
-                        if status.code() == grpc::Code::InvalidArgument {
-                            return Ok(None.into());
-                        } else {
-                            return Err(status);
-                        }
-                    }
-                    Ok(Async::Ready(rsp)) => rsp,
-                };
-                let (tx, rx) = watch::channel(profiles::Routes::default());
-                let daemon = Daemon {
-                    tx,
-                    backoff: *backoff,
-                    service: service.clone(),
-                    request: request.clone(),
-                    state: State::Streaming(response.into_inner()),
-                };
-                tokio::spawn(daemon.in_current_span().map_err(|n| match n {}));
+        match self.0 {
+            ProfileFutureInner::Skipped => Ok(None.into()),
+            ProfileFutureInner::Pending(ref mut inner) => {
+                let profile =
+                    try_ready!(inner.as_mut().expect("polled after ready").poll_profile());
+
+                let (tx, rx) = watch::channel(profile);
+                let inner = inner.take().expect("polled after ready");
+                tokio::spawn(
+                    Daemon { inner, tx }
+                        .in_current_span()
+                        .map_err(|n| match n {}),
+                );
                 Ok(Some(rx).into())
             }
         }
@@ -190,30 +175,19 @@ impl Stream for Rx {
     }
 }
 
-// === impl Daemon ===
+// === impl Inner ===
 
-enum StreamState {
-    SendLost,
-    RecvDone,
-}
-
-impl<T> Daemon<T>
+impl<T> Inner<T>
 where
     T: GrpcService<BoxBody>,
 {
-    fn proxy_stream(
+    fn poll_rx(
         rx: &mut grpc::Streaming<api::DestinationProfile, T::ResponseBody>,
-        tx: &mut watch::Sender<profiles::Routes>,
-    ) -> Async<StreamState> {
+    ) -> Async<Option<profiles::Routes>> {
         loop {
-            match tx.poll_close() {
-                Ok(Async::Ready(())) | Err(()) => return StreamState::SendLost.into(),
-                Ok(Async::NotReady) => {}
-            }
-
             match rx.poll() {
                 Ok(Async::NotReady) => return Async::NotReady,
-                Ok(Async::Ready(None)) => return StreamState::RecvDone.into(),
+                Ok(Async::Ready(None)) => return None.into(),
                 Ok(Async::Ready(Some(proto))) => {
                     debug!("profile received: {:?}", proto);
                     let retry_budget = proto.retry_budget.and_then(convert_retry_budget);
@@ -231,43 +205,27 @@ where
                         routes,
                         dst_overrides,
                     };
-                    if tx.broadcast(profile).is_err() {
-                        return StreamState::SendLost.into();
-                    }
+                    return Some(profile).into();
                 }
                 Err(e) => {
                     warn!("profile stream failed: {:?}", e);
-                    return StreamState::RecvDone.into();
+                    return None.into();
                 }
             }
         }
     }
-}
 
-impl<T> Future for Daemon<T>
-where
-    T: GrpcService<BoxBody>,
-{
-    type Item = ();
-    type Error = Never;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll_profile(&mut self) -> Poll<profiles::Routes, grpc::Status> {
         loop {
             self.state = match self.state {
-                State::Disconnected => match self.service.poll_ready() {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Err(err) => {
-                        error!("profile service unexpected error: {:?}", err,);
-                        return Ok(Async::Ready(()));
-                    }
-                    Ok(Async::Ready(())) => {
-                        debug!("getting profile");
-                        let rspf = self
-                            .service
-                            .get_profile(grpc::Request::new(self.request.clone()));
-                        State::Waiting(rspf)
-                    }
-                },
+                State::Disconnected => {
+                    try_ready!(self.service.poll_ready());
+                    debug!("getting profile");
+                    let rspf = self
+                        .service
+                        .get_profile(grpc::Request::new(self.request.clone()));
+                    State::Waiting(rspf)
+                }
                 State::Waiting(ref mut f) => match f.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(rsp)) => {
@@ -279,18 +237,48 @@ where
                         State::Backoff(Delay::new(clock::now() + self.backoff))
                     }
                 },
-                State::Streaming(ref mut s) => match Self::proxy_stream(s, &mut self.tx) {
+                State::Streaming(ref mut s) => match Self::poll_rx(s) {
                     Async::NotReady => return Ok(Async::NotReady),
-                    Async::Ready(StreamState::SendLost) => return Ok(().into()),
-                    Async::Ready(StreamState::RecvDone) => {
-                        State::Backoff(Delay::new(clock::now() + self.backoff))
-                    }
+                    Async::Ready(Some(profile)) => return Ok(profile.into()),
+                    Async::Ready(None) => State::Backoff(Delay::new(clock::now() + self.backoff)),
                 },
                 State::Backoff(ref mut f) => match f.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Err(_) | Ok(Async::Ready(())) => State::Disconnected,
                 },
             };
+        }
+    }
+}
+
+// === impl Daemon ===
+
+impl<T> Future for Daemon<T>
+where
+    T: GrpcService<BoxBody>,
+{
+    type Item = ();
+    type Error = Never;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            match self.tx.poll_close() {
+                Ok(Async::Ready(())) | Err(()) => return Ok(().into()),
+                Ok(Async::NotReady) => {}
+            }
+
+            let profile = match self.inner.poll_profile() {
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Ok(Async::Ready(profile)) => profile,
+                Err(error) => {
+                    error!(%error, "profile service died");
+                    return Ok(().into());
+                }
+            };
+
+            if self.tx.broadcast(profile).is_err() {
+                return Ok(().into());
+            }
         }
     }
 }

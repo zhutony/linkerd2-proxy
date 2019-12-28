@@ -86,7 +86,7 @@ impl Controller {
         DstSender(tx)
     }
 
-    pub fn destination_fail(self, dest: &str, status: grpc::Status) -> Self {
+    pub fn destination_fail(&self, dest: &str, status: grpc::Status) {
         let path = if dest.contains(":") {
             dest.to_owned()
         } else {
@@ -100,28 +100,23 @@ impl Controller {
             .lock()
             .unwrap()
             .push_back(Dst::Call(dst, Err(status)));
-        self
     }
 
-    pub fn destination_err(self, dest: &str, err: grpc::Code) -> Self {
+    pub fn destination_err(&self, dest: &str, err: grpc::Code) {
         self.destination_tx(dest)
             .send_err(grpc::Status::new(err, "unit test controller fake error"));
-        self
     }
 
-    pub fn destination_and_close(self, dest: &str, addr: SocketAddr) -> Self {
+    pub fn destination_and_close(&self, dest: &str, addr: SocketAddr) {
         self.destination_tx(dest).send_addr(addr);
-        self
     }
 
-    pub fn destination_close(self, dest: &str) -> Self {
+    pub fn destination_close(&self, dest: &str) {
         drop(self.destination_tx(dest));
-        self
     }
 
-    pub fn no_more_destinations(self) -> Self {
+    pub fn no_more_destinations(&self) {
         self.expect_dst_calls.lock().unwrap().push_back(Dst::Done);
-        self
     }
 
     pub fn delay_listen<F>(self, f: F) -> Listening
@@ -133,6 +128,11 @@ impl Controller {
             "support destination service",
             Some(Box::new(f.then(|_| Ok(())))),
         )
+    }
+
+    pub fn default_profile_and_close(&self, dest: &str) {
+        let tx = self.profile_tx(dest);
+        tx.send(pb::DestinationProfile::default());
     }
 
     pub fn profile_tx(&self, dest: &str) -> ProfileSender {
