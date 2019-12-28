@@ -763,6 +763,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
+        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
         let dst = ctrl.destination_tx("disco.test.svc.cluster.local");
         dst.send_h2_hinted(srv.addr);
 
