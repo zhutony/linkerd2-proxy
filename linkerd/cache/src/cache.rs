@@ -67,8 +67,8 @@ where
         self.capacity
     }
 
-    pub fn can_insert(&self) -> bool {
-        self.values.len() < self.capacity
+    pub fn available(&self) -> usize {
+        self.capacity - self.values.len()
     }
 
     /// Attempts to access an item by key.

@@ -87,13 +87,14 @@ where
             return future::ok(service.clone().into());
         }
 
-        if !cache.can_insert() {
-            debug!("not enough capacity to insert target into cache");
+        let available = cache.available();
+        if available == 0 {
+            debug!(capacity = %cache.capacity(), "exhausted");
             return future::err(error::NoCapacity(cache.capacity()).into());
         }
 
         // Make a new service for the target
-        debug!("inserting new target into cache");
+        debug!(%available, "inserting new target into cache");
         let service = self.make.make(target.clone());
         cache.insert(target.clone(), service.clone());
         future::ok(service.into())

@@ -191,7 +191,7 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Concrete>()
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
@@ -228,7 +228,7 @@ impl<A: OrigDstAddr> Config<A> {
                     canonicalize_timeout,
                 ))
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .push_per_make(
                     svc::layers()
@@ -251,7 +251,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
                         .push_per_make(svc::layers().boxed())
                         .into_inner()
-                ))
+                ).with_predicate(LogicalError::is_discovery_rejected))
                 .serves::<(Logical, Endpoint)>()
                 .push_pending()
                 .push_per_make(
@@ -331,3 +331,64 @@ pub fn trace_labels() -> HashMap<String, String> {
     l.insert("direction".to_string(), "outbound".to_string());
     l
 }
+
+#[derive(Clone, Debug)]
+enum LogicalError {
+    DiscoveryRejected,
+    Inner(String),
+}
+
+impl std::fmt::Display for LogicalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogicalError::DiscoveryRejected => write!(f, "discovery rejected"),
+            LogicalError::Inner(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for LogicalError {}
+
+impl From<Error> for LogicalError {
+    fn from(orig: Error) -> Self {
+        if let Some(inner) = orig.downcast_ref::<LogicalError>() {
+            return inner.clone();
+        }
+
+        if orig.is::<DiscoveryRejected>() {
+            return LogicalError::DiscoveryRejected;
+        }
+
+        LogicalError::Inner(orig.to_string())
+    }
+}
+
+impl LogicalError {
+    fn is_discovery_rejected(err: &Error) -> bool {
+        tracing::trace!(?err, "is_discovery_rejected");
+        if let Some(LogicalError::DiscoveryRejected) = err.downcast_ref::<LogicalError>() {
+            return true;
+        }
+
+        false
+    }
+}
+
+// === impl DiscoveryRejected ===
+
+#[derive(Clone, Debug)]
+pub struct DiscoveryRejected(());
+
+impl DiscoveryRejected {
+    pub fn new() -> Self {
+        DiscoveryRejected(())
+    }
+}
+
+impl std::fmt::Display for DiscoveryRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "discovery rejected")
+    }
+}
+
+impl std::error::Error for DiscoveryRejected {}

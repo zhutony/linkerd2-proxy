@@ -1,4 +1,5 @@
 use futures::{try_ready, Future, Poll};
+
 use linkerd2_error::Error;
 use std::marker::PhantomData;
 use tower::util::Ready;
@@ -78,7 +79,9 @@ where
                     let svc = try_ready!(fut.poll().map_err(Into::into));
                     MakeReadyFuture::Ready(Ready::new(svc))
                 }
-                MakeReadyFuture::Ready(ref mut fut) => return fut.poll().map_err(Into::into),
+                MakeReadyFuture::Ready(ref mut fut) => {
+                    return fut.poll().map_err(Into::into);
+                }
             }
         }
     }

@@ -8,22 +8,22 @@ use tracing::trace;
 pub trait CloneError {
     type Error: Into<Error> + Clone;
 
-    fn clone_err(&self, err: &Error) -> Self::Error;
+    fn clone_err(&self, err: Error) -> Self::Error;
 }
 
 #[derive(Clone, Debug)]
-pub struct Layer<C = ()> {
-    clone_err: C,
+pub struct Layer<E = Poisoned> {
+    _marker: std::marker::PhantomData<E>,
 }
 
-pub struct Lock<S, C: CloneError = ()> {
-    lock: lock::Lock<State<S, C>>,
-    locked: Option<lock::LockGuard<State<S, C>>>,
+pub struct Lock<S, E = Poisoned> {
+    lock: lock::Lock<State<S, E>>,
+    locked: Option<lock::LockGuard<State<S, E>>>,
 }
 
-enum State<S, C: CloneError> {
-    Service { service: S, clone_err: C },
-    Error(C::Error),
+enum State<S, E> {
+    Service(S),
+    Error(E),
 }
 
 #[derive(Clone, Debug)]
@@ -31,23 +31,30 @@ pub struct Poisoned(String);
 
 impl Layer {
     pub fn new() -> Self {
-        Layer { clone_err: () }
+        Layer {
+            _marker: std::marker::PhantomData,
+        }
     }
-}
 
-impl<S, C: Clone + CloneError> tower::layer::Layer<S> for Layer<C> {
-    type Service = Lock<S, C>;
-
-    fn layer(&self, service: S) -> Self::Service {
-        let clone_err = self.clone_err.clone();
-        Self::Service {
-            locked: None,
-            lock: lock::Lock::new(State::Service { service, clone_err }),
+    pub fn with_errors<E: Clone + From<Error> + Into<Error>>(self) -> Layer<E> {
+        Layer {
+            _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<S, C: CloneError> Clone for Lock<S, C> {
+impl<S, E: From<Error> + Clone> tower::layer::Layer<S> for Layer<E> {
+    type Service = Lock<S, E>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        Self::Service {
+            locked: None,
+            lock: lock::Lock::new(State::Service(service)),
+        }
+    }
+}
+
+impl<S, E> Clone for Lock<S, E> {
     fn clone(&self) -> Self {
         Self {
             locked: None,
@@ -56,11 +63,11 @@ impl<S, C: CloneError> Clone for Lock<S, C> {
     }
 }
 
-impl<T, S, C> tower::Service<T> for Lock<S, C>
+impl<T, S, E> tower::Service<T> for Lock<S, E>
 where
     S: tower::Service<T>,
     S::Error: Into<Error>,
-    C: CloneError,
+    E: Clone + From<Error> + Into<Error>,
 {
     type Response = S::Response;
     type Error = Error;
@@ -69,18 +76,14 @@ where
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         loop {
             if let Some(state) = self.locked.as_mut() {
-                if let State::Service {
-                    ref mut service,
-                    ref clone_err,
-                } = **state
-                {
+                if let State::Service(ref mut service) = **state {
                     return match service.poll_ready() {
                         Ok(ok) => Ok(ok),
                         Err(err) => {
-                            let err: Error = err.into();
-                            **state = State::Error(clone_err.clone_err(&err));
+                            let err = E::from(err.into());
+                            **state = State::Error(err.clone());
                             self.locked = None;
-                            return Err(err);
+                            Err(err.into())
                         }
                     };
                 }
@@ -106,23 +109,12 @@ where
 
     fn call(&mut self, t: T) -> Self::Future {
         if let Some(mut state) = self.locked.take() {
-            if let State::Service {
-                ref mut service, ..
-            } = *state
-            {
+            if let State::Service(ref mut service) = *state {
                 return service.call(t).map_err(Into::into);
             }
         }
 
-        unreachable!("called before ready")
-    }
-}
-
-impl CloneError for () {
-    type Error = Poisoned;
-
-    fn clone_err(&self, e: &Error) -> Self::Error {
-        Poisoned(e.to_string())
+        unreachable!("called before ready");
     }
 }
 
@@ -133,3 +125,9 @@ impl std::fmt::Display for Poisoned {
 }
 
 impl std::error::Error for Poisoned {}
+
+impl From<Error> for Poisoned {
+    fn from(e: Error) -> Self {
+        Poisoned(e.to_string())
+    }
+}
