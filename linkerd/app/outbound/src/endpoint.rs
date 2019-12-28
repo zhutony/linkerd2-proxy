@@ -255,13 +255,16 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
             dst: dst.clone(),
             settings,
         };
+
         let fallback = Endpoint {
             addr: self.0.addrs.target_addr(),
             metadata: Metadata::empty(),
-            // TODO set from header
-            identity: Conditional::None(
-                tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into(),
-            ),
+            identity: match identity_from_header(req, L5D_REQUIRE_ID) {
+                Some(require_id) => Conditional::Some(require_id),
+                None => {
+                    Conditional::None(tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into())
+                }
+            },
             concrete: logical.clone().into(),
         };
 
