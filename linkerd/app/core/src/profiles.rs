@@ -7,17 +7,18 @@ use linkerd2_error::Never;
 use linkerd2_proxy_api::destination as api;
 use regex::Regex;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio_timer::{clock, Delay};
 use tower_grpc::{self as grpc, generic::client::GrpcService, Body, BoxBody};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_futures::Instrument;
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
     service: api::client::Destination<T>,
     backoff: Duration,
+    initial_timeout: Duration,
     context_token: String,
     suffixes: Vec<dns::Suffix>,
 }
@@ -34,7 +35,7 @@ pub struct ProfileFuture<S: GrpcService<BoxBody>>(ProfileFutureInner<S>);
 
 enum ProfileFutureInner<S: GrpcService<BoxBody>> {
     Skipped,
-    Pending(Option<Inner<S>>),
+    Pending(Option<Inner<S>>, Delay),
 }
 
 struct Daemon<T>
@@ -87,6 +88,7 @@ where
             service: api::client::Destination::new(service),
             backoff,
             context_token,
+            initial_timeout: Duration::from_secs(1),
             suffixes: suffixes.into_iter().collect(),
         }
     }
@@ -123,14 +125,21 @@ where
             ..Default::default()
         };
 
+        let service = {
+            // In case the ready service holds resources, pass it into the
+            // response and use a new clone for the client.
+            let s = self.service.clone();
+            std::mem::replace(&mut self.service, s)
+        };
+
         let daemon = Inner {
+            service,
             request,
             backoff: self.backoff,
-            service: self.service.clone(),
             state: State::Disconnected,
         };
 
-        ProfileFuture(ProfileFutureInner::Pending(Some(daemon)))
+        ProfileFuture(ProfileFutureInner::Pending(Some(daemon), Delay::new(Instant::now() + self.initial_timeout)))
     }
 }
 
@@ -147,9 +156,18 @@ where
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.0 {
             ProfileFutureInner::Skipped => Ok(None.into()),
-            ProfileFutureInner::Pending(ref mut inner) => {
-                let profile =
-                    try_ready!(inner.as_mut().expect("polled after ready").poll_profile());
+            ProfileFutureInner::Pending(ref mut inner, ref mut timeout) => {
+                let profile = match inner.as_mut().expect("polled after ready").poll_profile()? {
+                    Async::Ready(profile) => profile,
+                    Async::NotReady => {
+                        if timeout.poll().expect("timer must not fail").is_not_ready() {
+                            return Ok(Async::NotReady);
+                        }
+
+                        info!("Using default service profile after timeout");
+                        profiles::Routes::default()
+                    }
+                };
 
                 let (tx, rx) = watch::channel(profile);
                 let inner = inner.take().expect("polled after ready");
