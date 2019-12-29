@@ -66,17 +66,18 @@ where
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         if self.inner.poll_ready().map_err(Into::into)?.is_ready() {
+            trace!("service became ready");
             self.timeout = None;
             return Ok(Async::Ready(()));
         }
 
         if self.timeout.is_none() {
-            trace!(timeout = ?self.duration, "setting service acquisition timeout");
+            trace!(timeout = ?self.duration, "service is not ready");
             self.timeout = Some(Delay::new(clock::now() + self.duration));
         }
         let timeout = self.timeout.as_mut().unwrap();
         if timeout.poll().map_err(Into::<Error>::into)?.is_ready() {
-            debug!("service acquisition timeout");
+            debug!(timeout = ?self.duration, "service acquisition failed");
             return Err(super::error::ReadyTimeout(self.duration).into());
         }
 
