@@ -51,7 +51,7 @@ fn profile(stage: &str, overrides: Vec<pb::WeightedDst>) -> pb::DestinationProfi
 }
 
 fn wait_for_profile_stage(client: &client::Client, metrics: &client::Client, stage: &str) {
-    loop {
+    for _ in 0..10 {
         assert_eq!(client.get("/load-profile"), "");
         let m = metrics.get("/metrics");
         let stage_metric = format!("rt_load_profile=\"{}\"", stage);
@@ -70,22 +70,21 @@ fn add_a_dst_override() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
+    let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
 
     let leaf = "leaf";
     let leaf_svc = Service::new(leaf);
     ctrl.destination_and_close(&leaf_svc.authority(), leaf_svc.svc.addr);
 
-    let profile_tx = ctrl.profile_tx(&apex_svc.authority());
-
     let proxy = proxy::new().controller(ctrl.run()).run();
-
     let client = client::http1(proxy.outbound, apex_svc.authority());
     let metrics = client::http1(proxy.metrics, "localhost");
 
     let n = 100;
 
     // 1. Send `n` requests to apex service
+    profile_tx.send(pb::DestinationProfile::default());
     for _ in 0..n {
         assert_eq!(client.get("/"), apex);
     }
@@ -124,6 +123,7 @@ fn add_multiple_dst_overrides() {
     ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
+    profile_tx.send(pb::DestinationProfile::default());
 
     let proxy = proxy::new().controller(ctrl.run()).run();
 

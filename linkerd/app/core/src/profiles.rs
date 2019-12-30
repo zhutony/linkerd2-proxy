@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::timer::Delay;
 use tower_grpc::{self as grpc, generic::client::GrpcService, Body, BoxBody};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, info_span, trace, warn};
 use tracing_futures::Instrument;
 
 #[derive(Clone, Debug)]
@@ -21,10 +21,6 @@ pub struct Client<S, R> {
     initial_timeout: Duration,
     context_token: String,
     suffixes: Vec<dns::Suffix>,
-}
-
-pub struct Rx {
-    rx: watch::Receiver<profiles::Routes>,
 }
 
 pub type Receiver = watch::Receiver<profiles::Routes>;
@@ -140,6 +136,7 @@ where
                 };
             }
         };
+
         if !self.suffixes.iter().any(|s| s.contains(dst.name())) {
             debug!("name not in profile suffixes");
             self.service = self.service.clone();
@@ -163,16 +160,14 @@ where
 
         let timeout = Delay::new(Instant::now() + self.initial_timeout);
 
+        let inner = Inner {
+            service,
+            request,
+            recover: self.recover.clone(),
+            state: State::Disconnected { backoff: None },
+        };
         ProfileFuture {
-            inner: ProfileFutureInner::Pending(
-                Some(Inner {
-                    service,
-                    request,
-                    recover: self.recover.clone(),
-                    state: State::Disconnected { backoff: None },
-                }),
-                timeout,
-            ),
+            inner: ProfileFutureInner::Pending(Some(inner), timeout),
         }
     }
 }
@@ -193,9 +188,12 @@ where
         match self.inner {
             ProfileFutureInner::Disabled => Ok(None.into()),
             ProfileFutureInner::Pending(ref mut inner, ref mut timeout) => {
-                let profile = match inner.as_mut().expect("polled after ready").poll_profile()? {
-                    Async::Ready(profile) => profile,
-                    Async::NotReady => {
+                let profile = match inner.as_mut().expect("polled after ready").poll_profile() {
+                    Err(error) => {
+                        trace!(%error, "failed to fetch profile");
+                        return Err(error);
+                    }
+                    Ok(Async::NotReady) => {
                         if timeout.poll().expect("timer must not fail").is_not_ready() {
                             return Ok(Async::NotReady);
                         }
@@ -203,8 +201,10 @@ where
                         info!("Using default service profile after timeout");
                         profiles::Routes::default()
                     }
+                    Ok(Async::Ready(profile)) => profile,
                 };
 
+                trace!("daemonizing");
                 let (tx, rx) = watch::channel(profile);
                 let inner = inner.take().expect("polled after ready");
                 tokio::spawn(
@@ -212,20 +212,10 @@ where
                         .in_current_span()
                         .map_err(|n| match n {}),
                 );
+
                 Ok(Some(rx).into())
             }
         }
-    }
-}
-
-// === impl Rx ===
-
-impl Stream for Rx {
-    type Item = profiles::Routes;
-    type Error = Never;
-
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.rx.poll().or_else(|_| Ok(None.into()))
     }
 }
 
@@ -239,6 +229,7 @@ where
     fn poll_rx(
         rx: &mut grpc::Streaming<api::DestinationProfile, S::ResponseBody>,
     ) -> Poll<Option<profiles::Routes>, grpc::Status> {
+        trace!("poll");
         let profile = try_ready!(rx.poll()).map(|proto| {
             debug!("profile received: {:?}", proto);
             let retry_budget = proto.retry_budget.and_then(convert_retry_budget);
@@ -261,14 +252,17 @@ where
     }
 
     fn poll_profile(&mut self) -> Poll<profiles::Routes, Error> {
+        let span = info_span!("poll_profile");
+        let _enter = span.enter();
+        trace!("enter");
         loop {
             self.state = match self.state {
                 State::Disconnected { ref mut backoff } => {
                     try_ready!(self.service.poll_ready().map_err(Into::<Error>::into));
-                    debug!("getting profile");
                     let future = self
                         .service
                         .get_profile(grpc::Request::new(self.request.clone()));
+                    trace!("waiting");
                     State::Waiting {
                         future,
                         backoff: backoff.take(),
@@ -280,38 +274,36 @@ where
                 } => match future.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(rsp)) => {
-                        trace!("response received");
+                        trace!("streaming");
                         State::Streaming(rsp.into_inner())
                     }
                     Err(e) => {
                         warn!("error fetching profile: {:?}", e);
                         let new_backoff = self.recover.recover(e.into())?;
+                        trace!("disconnected");
                         State::Disconnected {
                             backoff: Some(backoff.take().unwrap_or(new_backoff)),
                         }
                     }
                 },
-                State::Streaming(ref mut s) => match Self::poll_rx(s) {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(Some(profile))) => return Ok(profile.into()),
-                    Ok(Async::Ready(None)) => {
-                        let backoff = self
-                            .recover
-                            .recover(grpc::Status::new(grpc::Code::Ok, "").into())
-                            .map_err(Error::from)?;
-                        State::Backoff(Some(backoff))
-                    }
-                    Err(e) => {
-                        let backoff = self.recover.recover(e.into())?;
-                        State::Backoff(Some(backoff))
-                    }
-                },
+                State::Streaming(ref mut s) => {
+                    let status = match Self::poll_rx(s) {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(Some(profile))) => return Ok(profile.into()),
+                        Ok(Async::Ready(None)) => grpc::Status::new(grpc::Code::Ok, ""),
+                        Err(status) => status,
+                    };
+                    trace!(%status, "backoff");
+                    let backoff = self.recover.recover(status.into())?;
+                    State::Backoff(Some(backoff))
+                }
                 State::Backoff(ref mut backoff) => {
                     let backoff = match backoff.as_mut().unwrap().poll().map_err(Into::into)? {
                         Async::NotReady => return Ok(Async::NotReady),
                         Async::Ready(Some(())) => backoff.take(),
                         Async::Ready(None) => None,
                     };
+                    trace!("disconnected");
                     State::Disconnected { backoff }
                 }
             };
@@ -330,10 +322,16 @@ where
     type Error = Never;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let span = info_span!("daemon");
+        let _enter = span.enter();
+        trace!("poll");
         loop {
             match self.tx.poll_close() {
-                Ok(Async::Ready(())) | Err(()) => return Ok(().into()),
                 Ok(Async::NotReady) => {}
+                Ok(Async::Ready(())) | Err(()) => {
+                    trace!("profile observation dropped");
+                    return Ok(().into());
+                }
             }
 
             let profile = match self.inner.poll_profile() {
@@ -345,7 +343,9 @@ where
                 }
             };
 
+            trace!(?profile, "publishing");
             if self.tx.broadcast(profile).is_err() {
+                trace!("failed to publish profile");
                 return Ok(().into());
             }
         }

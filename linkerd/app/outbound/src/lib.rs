@@ -197,7 +197,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
-            let profile_stack = balancer_cache
+            let profile_router = balancer_cache
                 .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
@@ -222,7 +222,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .routes::<(), Logical>()
                 .make(());
 
-            let logical_cache = svc::stack(profile_stack)
+            let logical_cache = svc::stack(profile_router)
                 .serves::<Logical>()
                 .push(http::normalize_uri::layer())
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))

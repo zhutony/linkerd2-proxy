@@ -18,7 +18,7 @@ use linkerd2_error::Error;
 use linkerd2_stack::{proxy, Make};
 use rand::{rngs::SmallRng, SeedableRng};
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 pub struct Layer<G, R, O = ()> {
@@ -183,6 +183,7 @@ where
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        trace!("poll");
         let profiles = try_ready!(self.future.poll());
 
         let Inner {
@@ -200,6 +201,7 @@ where
             concrete: Forward(make_concrete),
         };
 
+        trace!("forwarding profile service ready");
         Ok(svc.into())
     }
 }
@@ -214,6 +216,7 @@ where
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        trace!("poll");
         let profiles = try_ready!(self.future.poll());
 
         let Inner {
@@ -232,7 +235,19 @@ where
             concrete: Override { service, update },
         };
 
+        trace!("overriding profile service ready");
         Ok(svc.into())
+    }
+}
+
+impl<T, R, C> Drop for Service<T, R, C>
+where
+    T: WithRoute,
+    R: Make<T::Route>,
+{
+    fn drop(&mut self) {
+        trace!("dropping profile service");
+        let _ = std::panic::catch_unwind(|| panic!());
     }
 }
 
