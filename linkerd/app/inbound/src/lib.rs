@@ -28,7 +28,7 @@ use linkerd2_app_core::{
     svc::{self, Make},
     trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
-    DispatchDeadline, Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP,
+    Addr, DispatchDeadline, Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP,
     L5D_SERVER_ID,
 };
 use std::collections::HashMap;
@@ -64,7 +64,7 @@ impl<A: OrigDstAddr> Config<A> {
     pub fn build<P>(
         self,
         local_identity: tls::Conditional<identity::Local>,
-        profiles_client: core::profiles::Client<P>,
+        profiles_client: P,
         tap_layer: tap::Layer,
         metrics: ProxyMetrics,
         span_sink: Option<mpsc::Sender<oc::Span>>,
@@ -72,9 +72,7 @@ impl<A: OrigDstAddr> Config<A> {
     ) -> Result<Inbound, Error>
     where
         A: Send + 'static,
-        P: GrpcService<grpc::BoxBody> + Clone + Send + 'static,
-        P::ResponseBody: Send,
-        <P::ResponseBody as grpc::Body>::Data: Send,
+        P: profiles::GetRoutes<Profile> + Clone + Send + 'static,
         P::Future: Send,
     {
         use proxy::core::listen::{Bind, Listen};

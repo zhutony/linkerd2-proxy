@@ -22,7 +22,7 @@ pub struct Config {
 /// The addr is preserved for logging.
 pub struct Dst<S> {
     pub addr: ControlAddr,
-    pub profiles: profiles::Client<S>,
+    pub profiles: profiles::Client<S, resolve::BackoffUnlessInvalidArgument>,
     pub resolve: resolve::Resolve<S>,
 }
 
@@ -43,10 +43,11 @@ impl Config {
             self.control.connect.backoff,
         );
 
-        const DUMB_PROFILE_BACKOFF: Duration = Duration::from_secs(3);
+        const DUMB_INITIAL_TIMEOUT: Duration = Duration::from_secs(2);
         let profiles = profiles::Client::new(
             svc,
-            DUMB_PROFILE_BACKOFF,
+            resolve::BackoffUnlessInvalidArgument::from(self.control.connect.backoff),
+            DUMB_INITIAL_TIMEOUT,
             self.context,
             self.profile_suffixes,
         );

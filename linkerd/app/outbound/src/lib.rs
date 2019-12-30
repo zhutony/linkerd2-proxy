@@ -15,7 +15,12 @@ use linkerd2_app_core::{
     dns, drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
     proxy::{
-        self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
+        self,
+        core::resolve::Resolve,
+        discover, fallback,
+        http::{self, profiles},
+        identity,
+        resolve::map_endpoint,
         tap, tcp, Server,
     },
     reconnect, router, serve,
@@ -68,7 +73,7 @@ impl<A: OrigDstAddr> Config<A> {
         local_identity: tls::Conditional<identity::Local>,
         resolve: R,
         dns_resolver: dns::Resolver,
-        profiles_client: core::profiles::Client<P>,
+        profiles_client: P,
         tap_layer: tap::Layer,
         metrics: ProxyMetrics,
         span_sink: Option<mpsc::Sender<oc::Span>>,
@@ -83,9 +88,7 @@ impl<A: OrigDstAddr> Config<A> {
             + 'static,
         R::Future: Send,
         R::Resolution: Send,
-        P: GrpcService<grpc::BoxBody> + Clone + Send + Sync + 'static,
-        P::ResponseBody: Send,
-        <P::ResponseBody as grpc::Body>::Data: Send,
+        P: profiles::GetRoutes<Profile> + Clone + Send + 'static,
         P::Future: Send,
     {
         use proxy::core::listen::{Bind, Listen};
