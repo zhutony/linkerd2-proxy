@@ -123,6 +123,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 
+            // Used by both the endpoint and the fallback stacks.
             let endpoint_layers = svc::layers()
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -154,24 +155,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(endpoint_layers.clone())
                 .serves::<Endpoint>();
 
-            // The client layer captures the requst body type into a
-            // phantomdata, so the stack cannot be shared directly between the
-            // balance and fallback stacks.
-            let fallback_cache = connect_stack
-                .clone()
-                .push(http::client::layer(connect.h2_settings))
-                .push(reconnect::layer({
-                    let backoff = connect.backoff.clone();
-                    move |_| Ok(backoff.stream())
-                }))
-                .push(http::normalize_uri::layer())
-                .push(endpoint_layers)
-                .push(trace::layer(|_: &Endpoint| info_span!("fallback")))
-                .push_pending()
-                .push_per_make(svc::lock::Layer::new())
-                .spawn_cache(router_capacity, router_max_idle_age)
-                .serves::<Endpoint>();
-
             // Resolves the target via the control plane and balances requests
             // over all endpoints returned from the destination service.
             const DISCOVER_UPDATE_BUFFER_CAPACITY: usize = 10;
@@ -197,7 +180,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .spawn_cache(router_capacity, router_max_idle_age)
                 .serves::<Concrete>();
 
-            let profile_router = balancer_cache
+            let logical_profile_cache = balancer_cache
                 .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
@@ -215,24 +198,30 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(classify::layer())
                         .into_inner(),
                 ))
-                .serves::<Profile>()
                 .push_pending()
                 .push_per_make(svc::map_target::layer(Concrete::from))
+                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
+                .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
                 .routes::<(), Logical>()
                 .make(());
 
-            let logical_cache = svc::stack(profile_router)
+            // TODO we want to cache the resolved name, not a service...
+            let canonical_cache = svc::stack(dns_resolver.into_refine_service())
+                .push_pending()
+                .push_per_make(svc::lock::Layer::new())
+                .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<dns::Name>();
+
+            let logical_stack = svc::stack(logical_profile_cache)
                 .serves::<Logical>()
                 .push(http::normalize_uri::layer())
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 .push(http::canonicalize::Layer::new(
-                    dns_resolver,
+                    canonical_cache,
                     canonicalize_timeout,
                 ))
-                .push_pending()
-                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
-                .spawn_cache(router_capacity, router_max_idle_age)
                 .push_per_make(
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
@@ -243,8 +232,26 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>();
 
-            let server_stack = svc::stack(logical_cache)
-                .serves::<Logical>()
+            // This basically duplicates the endpoint stack; but the client
+            // layer captures the requst body type into a phantomdata, so the
+            // stack cannot be shared directly between the balance and fallback
+            // stacks.
+            let fallback_cache = connect_stack
+                .clone()
+                .push(http::client::layer(connect.h2_settings))
+                .push(reconnect::layer({
+                    let backoff = connect.backoff.clone();
+                    move |_| Ok(backoff.stream())
+                }))
+                .push(http::normalize_uri::layer())
+                .push(endpoint_layers)
+                .push(trace::layer(|_: &Endpoint| info_span!("fallback")))
+                .push_pending()
+                .push_per_make(svc::lock::Layer::new())
+                .spawn_cache(router_capacity, router_max_idle_age)
+                .serves::<Endpoint>();
+
+            let server_stack = svc::stack(logical_stack)
                 .push_ready()
                 .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
                 .push_per_make(svc::layers().boxed())
@@ -256,12 +263,10 @@ impl<A: OrigDstAddr> Config<A> {
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .serves::<(Logical, Endpoint)>()
-                .push_pending()
                 .push_per_make(
                     svc::layers()
                         .push_ready_timeout(Duration::from_secs(10))
                 )
-                .makes::<(Logical, Endpoint)>()
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_make(
                     svc::layers()

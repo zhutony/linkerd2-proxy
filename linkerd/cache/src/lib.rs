@@ -75,8 +75,11 @@ where
     type Future = future::FutureResult<Self::Response, Self::Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        let lock = try_ready!(Ok(self.cache.poll_lock()));
-        self.lock = Some(lock);
+        if self.lock.is_none() {
+            let lock = try_ready!(Ok(self.cache.poll_lock()));
+            self.lock = Some(lock);
+        }
+
         Ok(Async::Ready(()))
     }
 

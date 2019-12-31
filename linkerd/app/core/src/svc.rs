@@ -85,6 +85,15 @@ impl<L> Layers<L> {
     pub fn per_make(self) -> Layers<per_make::Layer<L>> {
         Layers(per_make::layer(self.0))
     }
+
+    pub fn push_cache<T>(
+        self,
+        capacity: usize,
+        max_idle_age: Duration,
+    ) -> Layers<Pair<L, cache::Layer>>
+    {
+        self.push(cache::Layer::new(capacity, max_idle_age))
+    }
 }
 
 impl<M, L: Layer<M>> Layer<M> for Layers<L> {

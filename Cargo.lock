@@ -714,6 +714,7 @@ version = "0.1.0"
 dependencies = [
  "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
  "linkerd2-dns-name 0.1.0",
+ "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing-futures 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "trust-dns-resolver 0.10.2 (git+https://github.com/bluejekyll/trust-dns?rev=7c8a0739dad495bf5a4fddfe86b8bbe2aa52d060)",
@@ -1065,6 +1066,19 @@ name = "linkerd2-request-filter"
 version = "0.1.0"
 dependencies = [
  "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tracing 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "linkerd2-result-cache"
+version = "0.1.0"
+dependencies = [
+ "futures 0.1.26 (registry+https://github.com/rust-lang/crates.io-index)",
+ "linkerd2-cache 0.1.0",
+ "linkerd2-error 0.1.0",
+ "linkerd2-stack 0.1.0",
+ "tokio 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
  "tower 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
 ]

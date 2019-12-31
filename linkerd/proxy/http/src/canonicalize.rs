@@ -8,9 +8,10 @@
 
 use futures::{try_ready, Async, Future, Poll};
 use linkerd2_addr::{Addr, NameAddr};
-use linkerd2_dns as dns;
+use linkerd2_dns::{Name, Refine};
+use linkerd2_error::Error;
 use std::time::Duration;
-use tokio::timer::Timeout;
+use tokio::timer::{timeout, Timeout};
 use tracing::warn;
 
 pub trait Target {
@@ -21,21 +22,21 @@ pub trait Target {
 // FIXME the resolver should be abstracted to a trait so that this can be tested
 // without a real DNS service.
 #[derive(Debug, Clone)]
-pub struct Layer {
-    resolver: dns::Resolver,
+pub struct Layer<R> {
+    resolver: R,
     timeout: Duration,
 }
 
 #[derive(Clone, Debug)]
-pub struct Canonicalize<M> {
+pub struct Canonicalize<R, M> {
     inner: M,
+    resolver: R,
     timeout: Duration,
-    resolver: dns::Resolver,
 }
 
-pub enum MakeFuture<T, M: tower::Service<T>> {
+pub enum MakeFuture<T, R, M: tower::Service<T>> {
     Refine {
-        future: Timeout<dns::RefineFuture>,
+        future: Timeout<R>,
         make: Option<M>,
         original: Option<T>,
     },
@@ -45,14 +46,14 @@ pub enum MakeFuture<T, M: tower::Service<T>> {
 
 // === Layer ===
 
-impl Layer {
-    pub fn new(resolver: dns::Resolver, timeout: Duration) -> Self {
+impl<R> Layer<R> {
+    pub fn new(resolver: R, timeout: Duration) -> Self {
         Layer { resolver, timeout }
     }
 }
 
-impl<M> tower::layer::Layer<M> for Layer {
-    type Service = Canonicalize<M>;
+impl<R: Clone, M> tower::layer::Layer<M> for Layer<R> {
+    type Service = Canonicalize<R, M>;
 
     fn layer(&self, inner: M) -> Self::Service {
         Self::Service {
@@ -65,31 +66,40 @@ impl<M> tower::layer::Layer<M> for Layer {
 
 // === impl Canonicalize ===
 
-impl<T, M> tower::Service<T> for Canonicalize<M>
+impl<T, R, M> tower::Service<T> for Canonicalize<R, M>
 where
     T: Target + Clone,
+    R: tower::Service<Name, Response = Refine> + Clone,
+    R::Error: Into<Error>,
+    timeout::Error<R::Error>: Into<Error>,
     M: tower::Service<T> + Clone,
+    M::Error: Into<Error>,
 {
     type Response = M::Response;
-    type Error = M::Error;
-    type Future = MakeFuture<T, M>;
+    type Error = Error;
+    type Future = MakeFuture<T, R::Future, M>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
+        try_ready!(self.resolver.poll_ready().map_err(Into::into));
+        try_ready!(self.inner.poll_ready().map_err(Into::into));
+        Ok(().into())
     }
 
     fn call(&mut self, target: T) -> Self::Future {
         match target.addr().name_addr() {
-            None => MakeFuture::Make(self.inner.call(target)),
+            None => {
+                self.resolver = self.resolver.clone();
+                MakeFuture::Make(self.inner.call(target))
+            }
             Some(na) => {
-                let refine = self.resolver.refine(na.name());
+                let refine = self.resolver.call(na.name().clone());
 
-                // Relinquish any claim of readiness until `refine` completes.
-                self.inner = self.inner.clone();
+                let inner = self.inner.clone();
+                let make = std::mem::replace(&mut self.inner, inner);
 
                 MakeFuture::Refine {
+                    make: Some(make),
                     original: Some(target.clone()),
-                    make: Some(self.inner.clone()),
                     future: Timeout::new(refine, self.timeout),
                 }
             }
@@ -99,13 +109,16 @@ where
 
 // === impl MakeFuture ===
 
-impl<T, M> Future for MakeFuture<T, M>
+impl<T, R, M> Future for MakeFuture<T, R, M>
 where
     T: Target,
+    R: Future<Item = Refine>,
+    timeout::Error<R::Error>: Into<Error>,
     M: tower::Service<T> + Clone,
+    M::Error: Into<Error>,
 {
     type Item = M::Response;
-    type Error = M::Error;
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
@@ -126,16 +139,17 @@ where
                     Err(error) => {
                         let make = make.take().expect("illegal state");
                         let target = original.take().expect("illegal state");
+                        let error: Error = error.into();
                         warn!(%error, addr = %target.addr(), "failed to refine name via DNS");
                         MakeFuture::NotReady(make, Some(target))
                     }
                 },
                 MakeFuture::NotReady(ref mut svc, ref mut target) => {
-                    try_ready!(svc.poll_ready());
+                    try_ready!(svc.poll_ready().map_err(Into::into));
                     let target = target.take().expect("illegal state");
                     MakeFuture::Make(svc.call(target))
                 }
-                MakeFuture::Make(ref mut fut) => return fut.poll(),
+                MakeFuture::Make(ref mut fut) => return fut.poll().map_err(Into::into),
             };
         }
     }

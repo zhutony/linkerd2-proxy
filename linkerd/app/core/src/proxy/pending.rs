@@ -72,9 +72,10 @@ where
     }
 
     fn call(&mut self, req: Req) -> Self::Future {
-        match self {
-            Pending::Making(_) => panic!("pending not ready yet"),
-            Pending::Made(s) => s.call(req).map_err(Into::into),
+        if let Pending::Made(ref mut s) = self {
+             return s.call(req).map_err(Into::into);
         }
+
+        panic!("pending not ready yet"),
     }
 }

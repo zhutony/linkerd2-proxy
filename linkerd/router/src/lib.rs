@@ -1,4 +1,5 @@
-use futures::Poll;
+use futures::{try_ready, Future, Poll};
+use linkerd2_error::Error;
 use linkerd2_stack::Make;
 use std::hash::Hash;
 use tower::util::{Oneshot, ServiceExt};
@@ -61,20 +62,59 @@ where
 impl<U, S, K, M> tower::Service<U> for Router<K, M>
 where
     K: Key<U>,
-    M: Make<K::Key, Service = S>,
+    M: tower::Service<K::Key, Response = S>,
+    M::Error: Into<Error>,
     S: tower::Service<U>,
+    S::Error: Into<Error>,
 {
     type Response = S::Response;
-    type Error = S::Error;
-    type Future = Oneshot<S, U>;
+    type Error = Error;
+    type Future = ResponseFuture<U, M::Future, S>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(().into())
+        self.make.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, req: U) -> Self::Future {
         let key = self.key.key(&req);
-        self.make.make(key).oneshot(req)
+        ResponseFuture::Make(self.make.call(key), Some(req))
+    }
+}
+
+pub enum ResponseFuture<Req, M, S>
+where
+    M: Future<Item = S>,
+    M::Error: Into<Error>,
+    S: tower::Service<Req>,
+    S::Error: Into<Error>,
+{
+    Make(M, Option<Req>),
+    Respond(Oneshot<S, Req>),
+}
+
+impl<Req, M, S> Future for ResponseFuture<Req, M, S>
+where
+    M: Future<Item = S>,
+    M::Error: Into<Error>,
+    S: tower::Service<Req>,
+    S::Error: Into<Error>,
+{
+    type Item = S::Response;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            *self = match self {
+                ResponseFuture::Make(ref mut fut, ref mut req) => {
+                    let service = try_ready!(fut.poll().map_err(Into::into));
+                    let req = req.take().expect("polled after ready");
+                    ResponseFuture::Respond(service.oneshot(req))
+                }
+                ResponseFuture::Respond(ref mut future) => {
+                    return future.poll().map_err(Into::into);
+                }
+            }
+        }
     }
 }
 

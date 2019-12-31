@@ -240,17 +240,6 @@ where
     }
 }
 
-impl<T, R, C> Drop for Service<T, R, C>
-where
-    T: WithRoute,
-    R: Make<T::Route>,
-{
-    fn drop(&mut self) {
-        trace!("dropping profile service");
-        let _ = std::panic::catch_unwind(|| panic!());
-    }
-}
-
 mod sealed {
     pub trait PollUpdate {
         fn poll_update(&mut self);

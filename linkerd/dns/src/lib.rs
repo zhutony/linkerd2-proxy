@@ -17,6 +17,9 @@ pub struct Resolver {
     resolver: AsyncResolver,
 }
 
+#[derive(Clone)]
+pub struct RefineService(Resolver);
+
 pub trait ConfigureResolver {
     fn configure_resolver(&self, _: &mut ResolverOpts);
 }
@@ -30,6 +33,9 @@ pub enum Error {
 pub struct IpAddrFuture(Box<dyn Future<Item = LookupIp, Error = ResolveError> + Send + 'static>);
 
 pub struct RefineFuture(Box<dyn Future<Item = LookupIp, Error = ResolveError> + Send + 'static>);
+
+#[derive(Debug)]
+pub struct RefineError(ResolveError);
 
 pub struct Refine {
     pub name: Name,
@@ -79,16 +85,24 @@ impl Resolver {
         IpAddrFuture(Box::new(f))
     }
 
-    /// Attempts to refine `name` to a fully-qualified name.
-    ///
-    /// This method does DNS resolution for `name` and ignores the IP address
-    /// result, instead returning the `Name` that was resolved.
-    ///
-    /// For example, a name like `web` may be refined to `web.example.com.`,
-    /// depending on the DNS search path.
-    pub fn refine(&self, name: &Name) -> RefineFuture {
-        let name = name.clone();
+    /// Creates a refining service.
+    pub fn into_refine_service(self) -> RefineService {
+        RefineService(self)
+    }
+}
+
+impl tower::Service<Name> for RefineService {
+    type Response = Refine;
+    type Error = RefineError;
+    type Future = RefineFuture;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(().into())
+    }
+
+    fn call(&mut self, name: Name) -> Self::Future {
         let f = self
+            .0
             .resolver
             .lookup_ip(name.as_ref())
             .instrument(info_span!("refine", %name));
@@ -121,10 +135,10 @@ impl Future for IpAddrFuture {
 
 impl Future for RefineFuture {
     type Item = Refine;
-    type Error = ResolveError;
+    type Error = RefineError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let lookup = try_ready!(self.0.poll());
+        let lookup = try_ready!(self.0.poll().map_err(RefineError));
         let valid_until = lookup.valid_until();
 
         let n = lookup.query().name();
@@ -135,6 +149,14 @@ impl Future for RefineFuture {
         Ok(Async::Ready(refine))
     }
 }
+
+impl std::fmt::Display for RefineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for RefineError {}
 
 #[cfg(test)]
 mod tests {
