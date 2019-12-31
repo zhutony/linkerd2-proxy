@@ -210,8 +210,12 @@ impl<A: OrigDstAddr> Config<A> {
             let canonical_cache = svc::stack(dns_resolver.into_make_refine())
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .push(trace::layer(
+                    |name: &dns::Name| info_span!("canonicalize", %name),
+                ))
                 .push(svc::make_response::Layer)
-                .serves_rsp::<dns::Name, dns::Name>();
+                .serves_rsp::<dns::Name, dns::Name>()
+                .into_inner();
 
             let logical_stack = svc::stack(logical_profile_cache)
                 .serves::<Logical>()
@@ -221,6 +225,7 @@ impl<A: OrigDstAddr> Config<A> {
                     canonical_cache,
                     canonicalize_timeout,
                 ))
+                .serves::<Logical>()
                 .push_per_make(
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))

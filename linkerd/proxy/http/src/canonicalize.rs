@@ -11,8 +11,8 @@ use linkerd2_addr::{Addr, NameAddr};
 use linkerd2_dns::Name;
 use linkerd2_error::Error;
 use std::time::Duration;
-use tokio::timer::{timeout, Timeout};
-use tracing::warn;
+use tokio::timer::Timeout;
+use tracing::info;
 
 pub trait Target {
     fn addr(&self) -> &Addr;
@@ -71,7 +71,6 @@ where
     T: Target + Clone,
     R: tower::Service<Name, Response = Name> + Clone,
     R::Error: Into<Error>,
-    timeout::Error<R::Error>: Into<Error>,
     M: tower::Service<T> + Clone,
     M::Error: Into<Error>,
 {
@@ -113,7 +112,7 @@ impl<T, R, M> Future for MakeFuture<T, R, M>
 where
     T: Target,
     R: Future<Item = Name>,
-    timeout::Error<R::Error>: Into<Error>,
+    R::Error: Into<Error>,
     M: tower::Service<T> + Clone,
     M::Error: Into<Error>,
 {
@@ -127,23 +126,28 @@ where
                     ref mut future,
                     ref mut make,
                     ref mut original,
-                } => match future.poll() {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(refined)) => {
-                        let make = make.take().expect("illegal state");
-                        let mut target = original.take().expect("illegal state");
-                        let name = NameAddr::new(refined, target.addr().port());
-                        *target.addr_mut() = name.into();
-                        MakeFuture::NotReady(make, Some(target))
-                    }
-                    Err(error) => {
-                        let make = make.take().expect("illegal state");
-                        let target = original.take().expect("illegal state");
-                        let error: Error = error.into();
-                        warn!(%error, addr = %target.addr(), "failed to refine name via DNS");
-                        MakeFuture::NotReady(make, Some(target))
-                    }
-                },
+                } => {
+                    let target = match future.poll() {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(refined)) => {
+                            let mut target = original.take().expect("illegal state");
+                            let name = NameAddr::new(refined, target.addr().port());
+                            *target.addr_mut() = name.into();
+                            target
+                        }
+                        Err(error) => {
+                            if let Some(error) = error.into_inner().map(Into::into) {
+                                info!(%error, "DNS refinement failed");
+                            } else {
+                                info!("DNS refinement timed out");
+                            }
+                            original.take().expect("illegal state")
+                        }
+                    };
+
+                    let make = make.take().expect("illegal state");
+                    MakeFuture::NotReady(make, Some(target))
+                }
                 MakeFuture::NotReady(ref mut svc, ref mut target) => {
                     try_ready!(svc.poll_ready().map_err(Into::into));
                     let target = target.take().expect("illegal state");
