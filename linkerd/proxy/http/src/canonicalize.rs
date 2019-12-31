@@ -8,7 +8,7 @@
 
 use futures::{try_ready, Async, Future, Poll};
 use linkerd2_addr::{Addr, NameAddr};
-use linkerd2_dns::{Name, Refine};
+use linkerd2_dns::Name;
 use linkerd2_error::Error;
 use std::time::Duration;
 use tokio::timer::{timeout, Timeout};
@@ -69,7 +69,7 @@ impl<R: Clone, M> tower::layer::Layer<M> for Layer<R> {
 impl<T, R, M> tower::Service<T> for Canonicalize<R, M>
 where
     T: Target + Clone,
-    R: tower::Service<Name, Response = Refine> + Clone,
+    R: tower::Service<Name, Response = Name> + Clone,
     R::Error: Into<Error>,
     timeout::Error<R::Error>: Into<Error>,
     M: tower::Service<T> + Clone,
@@ -112,7 +112,7 @@ where
 impl<T, R, M> Future for MakeFuture<T, R, M>
 where
     T: Target,
-    R: Future<Item = Refine>,
+    R: Future<Item = Name>,
     timeout::Error<R::Error>: Into<Error>,
     M: tower::Service<T> + Clone,
     M::Error: Into<Error>,
@@ -129,10 +129,10 @@ where
                     ref mut original,
                 } => match future.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(refine)) => {
+                    Ok(Async::Ready(refined)) => {
                         let make = make.take().expect("illegal state");
                         let mut target = original.take().expect("illegal state");
-                        let name = NameAddr::new(refine.name, target.addr().port());
+                        let name = NameAddr::new(refined, target.addr().port());
                         *target.addr_mut() = name.into();
                         MakeFuture::NotReady(make, Some(target))
                     }

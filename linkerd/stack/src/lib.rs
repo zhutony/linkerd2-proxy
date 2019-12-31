@@ -3,6 +3,7 @@
 pub mod layer;
 pub mod make;
 pub mod map_target;
+pub mod pending;
 pub mod per_make;
 pub mod proxy;
 mod shared;

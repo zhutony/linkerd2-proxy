@@ -1,7 +1,7 @@
-use crate::svc::{self, ServiceExt};
+use crate::Make;
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_stack::Make;
+use tower::util::{Oneshot, ServiceExt};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Layer(());
@@ -24,7 +24,7 @@ pub fn layer() -> Layer {
 
 // === impl Layer ===
 
-impl<M> svc::Layer<M> for Layer {
+impl<M> tower::layer::Layer<M> for Layer {
     type Service = MakePending<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
@@ -36,9 +36,9 @@ impl<M> svc::Layer<M> for Layer {
 
 impl<T, M> Make<T> for MakePending<M>
 where
-    M: svc::Service<T> + Clone,
+    M: tower::Service<T> + Clone,
 {
-    type Service = Pending<svc::Oneshot<M, T>, <M as svc::Service<T>>::Response>;
+    type Service = Pending<Oneshot<M, T>, <M as tower::Service<T>>::Response>;
 
     fn make(&self, target: T) -> Self::Service {
         let fut = self.inner.clone().oneshot(target);
@@ -48,11 +48,11 @@ where
 
 // === impl Pending ===
 
-impl<F, S, Req> svc::Service<Req> for Pending<F, S>
+impl<F, S, Req> tower::Service<Req> for Pending<F, S>
 where
     F: Future<Item = S>,
     F::Error: Into<Error>,
-    S: svc::Service<Req>,
+    S: tower::Service<Req>,
     S::Error: Into<Error>,
 {
     type Response = S::Response;
@@ -73,9 +73,9 @@ where
 
     fn call(&mut self, req: Req) -> Self::Future {
         if let Pending::Made(ref mut s) = self {
-             return s.call(req).map_err(Into::into);
+            return s.call(req).map_err(Into::into);
         }
 
-        panic!("pending not ready yet"),
+        panic!("pending not ready yet");
     }
 }

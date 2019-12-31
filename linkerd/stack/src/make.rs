@@ -1,6 +1,6 @@
 use futures::{future, Poll};
 use linkerd2_error::Never;
-use tower_service::Service;
+use tower::Service;
 
 pub trait Make<T> {
     type Service;

@@ -207,12 +207,11 @@ impl<A: OrigDstAddr> Config<A> {
                 .routes::<(), Logical>()
                 .make(());
 
-            // TODO we want to cache the resolved name, not a service...
-            let canonical_cache = svc::stack(dns_resolver.into_refine_service())
-                .push_pending()
+            let canonical_cache = svc::stack(dns_resolver.into_make_refine())
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
-                .serves::<dns::Name>();
+                .push(svc::make_response::Layer)
+                .serves_rsp::<dns::Name, dns::Name>();
 
             let logical_stack = svc::stack(logical_profile_cache)
                 .serves::<Logical>()

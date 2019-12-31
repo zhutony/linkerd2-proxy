@@ -1,6 +1,5 @@
 use futures::{future, Future, Poll};
 use linkerd2_error::Error;
-use tower_service as tower;
 
 pub trait Proxy<Req, S: tower::Service<Self::Request>> {
     type Request;

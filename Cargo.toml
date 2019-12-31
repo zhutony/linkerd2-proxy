@@ -33,7 +33,6 @@ members = [
     "linkerd/proxy/tcp",
     "linkerd/proxy/transport",
     "linkerd/request-filter",
-    "linkerd/result-cache",
     "linkerd/reconnect",
     "linkerd/router",
     "linkerd/signal",

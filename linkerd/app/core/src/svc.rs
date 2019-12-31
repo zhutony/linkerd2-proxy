@@ -1,12 +1,12 @@
 // Possibly unused, but useful during development.
 #![allow(dead_code)]
 
-use crate::proxy::{buffer, http, pending, ready};
+use crate::proxy::{buffer, http, ready};
 use crate::{cache, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
-    self as stack, layer, map_target, per_make, Layer, LayerExt, Make, Shared,
+    self as stack, layer, map_target, pending, per_make, Layer, LayerExt, Make, Shared,
 };
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
@@ -84,15 +84,6 @@ impl<L> Layers<L> {
 
     pub fn per_make(self) -> Layers<per_make::Layer<L>> {
         Layers(per_make::layer(self.0))
-    }
-
-    pub fn push_cache<T>(
-        self,
-        capacity: usize,
-        max_idle_age: Duration,
-    ) -> Layers<Pair<L, cache::Layer>>
-    {
-        self.push(cache::Layer::new(capacity, max_idle_age))
     }
 }
 
@@ -213,6 +204,13 @@ impl<S> Stack<S> {
         self
     }
 
+    pub fn serves_rsp<T, U>(self) -> Self
+    where
+        S: Service<T, Response = U>,
+    {
+        self
+    }
+
     /// Validates that this stack serves T-typed targets.
     pub fn routes<T, Req>(self) -> Self
     where
@@ -267,6 +265,73 @@ pub mod load_shed {
 
         fn layer(&self, inner: S) -> Self::Service {
             LoadShed::new(inner)
+        }
+    }
+}
+
+pub mod make_response {
+    use super::Oneshot;
+    use crate::Error;
+    use futures::{try_ready, Future, Poll};
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct Layer;
+
+    #[derive(Clone, Debug)]
+    pub struct MakeResponse<M>(M);
+
+    pub enum ResponseFuture<F, S: tower::Service<()>> {
+        Make(F),
+        Respond(Oneshot<S, ()>),
+    }
+
+    impl<S> super::Layer<S> for Layer {
+        type Service = MakeResponse<S>;
+
+        fn layer(&self, inner: S) -> Self::Service {
+            MakeResponse(inner)
+        }
+    }
+
+    impl<T, M> tower::Service<T> for MakeResponse<M>
+    where
+        M: tower::MakeService<T, ()>,
+        M::MakeError: Into<Error>,
+        M::Error: Into<Error>,
+    {
+        type Response = M::Response;
+        type Error = Error;
+        type Future = ResponseFuture<M::Future, M::Service>;
+
+        fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+            self.0.poll_ready().map_err(Into::into)
+        }
+
+        fn call(&mut self, req: T) -> Self::Future {
+            ResponseFuture::Make(self.0.make_service(req))
+        }
+    }
+
+    impl<F, S> Future for ResponseFuture<F, S>
+    where
+        F: Future<Item = S>,
+        F::Error: Into<Error>,
+        S: tower::Service<()>,
+        S::Error: Into<Error>,
+    {
+        type Item = S::Response;
+        type Error = Error;
+
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+            loop {
+                *self = match self {
+                    ResponseFuture::Make(ref mut fut) => {
+                        let svc = try_ready!(fut.poll().map_err(Into::into));
+                        ResponseFuture::Respond(Oneshot::new(svc, ()))
+                    }
+                    ResponseFuture::Respond(ref mut fut) => return fut.poll().map_err(Into::into),
+                }
+            }
         }
     }
 }
