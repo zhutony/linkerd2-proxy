@@ -34,7 +34,9 @@ impl Fixture {
     }
 
     fn inbound_with_server(srv: server::Listening) -> Self {
-        let proxy = proxy::new().inbound(srv).run();
+        let ctrl = controller::new();
+        ctrl.default_profile_and_close("test.test.svc.cluster.local");
+        let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
         let metrics = client::http1(proxy.metrics, "localhost");
 
         let client = client::new(proxy.inbound, "tele.test.svc.cluster.local");
