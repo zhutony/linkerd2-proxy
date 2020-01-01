@@ -3,6 +3,7 @@ use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
 use std::marker::PhantomData;
 use tower::util::Ready;
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct Layer<Req>(PhantomData<fn(Req)>);
@@ -77,10 +78,15 @@ where
             *self = match self {
                 MakeReadyFuture::Making(ref mut fut) => {
                     let svc = try_ready!(fut.poll().map_err(Into::into));
+                    trace!("made; awaiting readiness");
                     MakeReadyFuture::Ready(Ready::new(svc))
                 }
                 MakeReadyFuture::Ready(ref mut fut) => {
-                    return fut.poll().map_err(Into::into);
+                    let ready = fut.poll().map_err(Into::into)?;
+                    if ready.is_ready() {
+                        trace!("ready");
+                    }
+                    return Ok(ready);
                 }
             }
         }

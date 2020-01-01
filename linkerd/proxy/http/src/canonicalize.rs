@@ -12,7 +12,7 @@ use linkerd2_dns::Name;
 use linkerd2_error::Error;
 use std::time::Duration;
 use tokio::timer::Timeout;
-use tracing::info;
+use tracing::{debug, info};
 
 pub trait Target {
     fn addr(&self) -> &Addr;
@@ -137,7 +137,7 @@ where
                         }
                         Err(error) => {
                             if let Some(error) = error.into_inner().map(Into::into) {
-                                info!(%error, "DNS refinement failed");
+                                debug!(%error, "DNS refinement failed");
                             } else {
                                 info!("DNS refinement timed out");
                             }

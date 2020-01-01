@@ -66,6 +66,10 @@ impl<L> Layers<L> {
         self.push(load_shed::Layer)
     }
 
+    pub fn push_make_ready<Req>(self) -> Layers<Pair<L, ready::Layer<Req>>> {
+        self.push(ready::Layer::new())
+    }
+
     pub fn push_ready_timeout(self, timeout: Duration) -> Layers<Pair<L, timeout::ready::Layer>> {
         self.push(timeout::ready::Layer::new(timeout))
     }
@@ -104,7 +108,7 @@ impl<S> Stack<S> {
         self.push(pending::layer())
     }
 
-    pub fn push_ready<Req>(self) -> Stack<ready::MakeReady<S, Req>> {
+    pub fn push_make_ready<Req>(self) -> Stack<ready::MakeReady<S, Req>> {
         self.push(ready::Layer::new())
     }
 

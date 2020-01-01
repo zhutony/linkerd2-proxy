@@ -164,6 +164,7 @@ impl<A: OrigDstAddr> Config<A> {
             // that target, and dispatch the request to it.
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
+                .push_make_ready()
                 .push_per_make(
                     svc::layers()
                         .push_ready_timeout(Duration::from_secs(10))

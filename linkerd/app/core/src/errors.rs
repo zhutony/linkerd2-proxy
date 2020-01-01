@@ -100,7 +100,6 @@ where
 
 fn map_err_to_5xx(e: Error) -> StatusCode {
     use linkerd2_cache::error as cache;
-    use linkerd2_timeout as timeout;
     use tower::load_shed::error as shed;
 
     if let Some(ref c) = e.downcast_ref::<cache::NoCapacity>() {
@@ -109,15 +108,15 @@ fn map_err_to_5xx(e: Error) -> StatusCode {
     } else if let Some(_) = e.downcast_ref::<shed::Overloaded>() {
         warn!("server overloaded, max-in-flight reached");
         http::StatusCode::SERVICE_UNAVAILABLE
-    } else if let Some(ref e) = e.downcast_ref::<timeout::error::ReadyTimeout>() {
-        warn!(timeout = ?e.duration(), "failed to acquire a client");
+    } else if e.is::<tower::timeout::error::Elapsed>() {
+        warn!("failed to acquire a client");
         http::StatusCode::SERVICE_UNAVAILABLE
     } else if let Some(err) = e.downcast_ref::<StatusError>() {
         error!(%err.status, %err.message);
         err.status
     } else {
         // we probably should have handled this before?
-        error!("unexpected error: {}", e);
+        error!("unexpected error: {:?}", e);
         http::StatusCode::BAD_GATEWAY
     }
 }

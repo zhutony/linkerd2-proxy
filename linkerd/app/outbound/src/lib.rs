@@ -256,21 +256,19 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<Endpoint>();
 
             let server_stack = svc::stack(logical_stack)
-                .push_ready()
+                .push_make_ready()
                 .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
                 .push_per_make(svc::layers().boxed())
                 .push(fallback::layer(
                     fallback_cache
-                        .push_ready()
+                        .push_make_ready()
                         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
                         .push_per_make(svc::layers().boxed())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .serves::<(Logical, Endpoint)>()
-                .push_per_make(
-                    svc::layers()
-                        .push_ready_timeout(Duration::from_secs(10))
-                )
+                .push_make_ready()
+                .push_timeout(Duration::from_secs(3))
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_make(
                     svc::layers()
