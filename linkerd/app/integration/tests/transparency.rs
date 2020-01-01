@@ -12,8 +12,9 @@ fn outbound_http1() {
 
     let srv = server::http1().route("/", "hello h1").run();
     let ctrl = controller::new();
-    ctrl.default_profile_and_close("transparency.test.svc.cluster.local");
-    ctrl.destination_and_close("transparency.test.svc.cluster.local", srv.addr);
+    ctrl.profile_tx_default("transparency.test.svc.cluster.local");
+    ctrl.destination_tx("transparency.test.svc.cluster.local")
+        .send_addr(srv.addr);
     let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
     let client = client::http1(proxy.outbound, "transparency.test.svc.cluster.local");
 
@@ -26,7 +27,7 @@ fn inbound_http1() {
 
     let srv = server::http1().route("/", "hello h1").run();
     let ctrl = controller::new();
-    ctrl.default_profile_and_close("transparency.test.svc.cluster.local");
+    ctrl.profile_tx_default("transparency.test.svc.cluster.local");
     let proxy = proxy::new()
         .controller(ctrl.run())
         .inbound_fuzz_addr(srv)
@@ -897,7 +898,7 @@ mod one_proxy {
 
     http1_tests! { proxy: |srv| {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("transparency.test.svc.cluster.local");
+        ctrl.profile_tx_default("transparency.test.svc.cluster.local");
         proxy::new().inbound(srv).controller(ctrl.run()).run()
     }}
 }
@@ -916,11 +917,11 @@ mod proxy_to_proxy {
 
     http1_tests! { proxy: |srv| {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("transparency.test.svc.cluster.local");
+        ctrl.profile_tx_default("transparency.test.svc.cluster.local");
         let inbound = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("transparency.test.svc.cluster.local");
+        ctrl.profile_tx_default("transparency.test.svc.cluster.local");
         let dst = ctrl.destination_tx("transparency.test.svc.cluster.local");
         dst.send_h2_hinted(inbound.inbound);
 
@@ -1163,14 +1164,14 @@ mod max_in_flight {
         };
         env.put(prop, "1".into());
         let ctrl = controller::new();
-        ctrl.default_profile_and_close(host);
+        ctrl.profile_tx_default(host);
         let proxy = match dir {
             Dir::In => proxy::new()
                 .inbound(srv)
                 .controller(ctrl.run())
                 .run_with_test_env(env),
             Dir::Out => {
-                ctrl.destination_and_close(host, srv.addr);
+                ctrl.destination_tx(host).send_addr(srv.addr);
                 proxy::new()
                     .outbound(srv)
                     .controller(ctrl.run())

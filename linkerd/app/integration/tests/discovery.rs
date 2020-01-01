@@ -14,8 +14,8 @@ macro_rules! generate_tests {
             let srv = $make_server().route("/", "hello").route("/bye", "bye").run();
 
             let ctrl = controller::new();
-               ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-               ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+            ctrl.profile_tx_default("disco.test.svc.cluster.local");
+            ctrl.destination_tx("disco.test.svc.cluster.local").send_addr(srv.addr);
 
             let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
             let client = $make_client(proxy.outbound, "disco.test.svc.cluster.local");
@@ -39,7 +39,7 @@ macro_rules! generate_tests {
             let ctrl = controller::new();
             let _txs = (0..=router_cap).map(|n| {
                 let disco_n = format!("disco{}.test.svc.cluster.local", n);
-                ctrl.default_profile_and_close(&disco_n);
+                ctrl.profile_tx_default(&disco_n);
                 let tx = ctrl.destination_tx(&disco_n);
                 tx.send_addr(srv_addr);
                 tx // This will go into a vec, to keep the stream open.
@@ -77,9 +77,9 @@ macro_rules! generate_tests {
             let srv = $make_server().route("/recon", "nect").run();
 
             let ctrl = controller::new();
-            ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-            ctrl.destination_close("disco.test.svc.cluster.local");
-            ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+            ctrl.profile_tx_default("disco.test.svc.cluster.local");
+            drop(ctrl.destination_tx("disco.test.svc.cluster.local"));
+            ctrl.destination_tx("disco.test.svc.cluster.local").send_addr(srv.addr);
 
             let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
             let client = $make_client(proxy.outbound, "disco.test.svc.cluster.local");
@@ -110,7 +110,7 @@ macro_rules! generate_tests {
             }).run();
 
             let ctrl = controller::new();
-               ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+               ctrl.profile_tx_default("disco.test.svc.cluster.local");
             ctrl.destination_tx("disco.test.svc.cluster.local").send(up);
 
             let proxy = proxy::new()
@@ -157,7 +157,7 @@ macro_rules! generate_tests {
             const NAME: &'static str = "unresolvable.svc.cluster.local";
             let ctrl = controller::new();
             ctrl
-                .default_profile_and_close(NAME);
+                .profile_tx_default(NAME);
             ctrl.destination_fail(
                     NAME,
                     grpc::Status::new(grpc::Code::InvalidArgument, "unresolvable"),
@@ -194,7 +194,7 @@ macro_rules! generate_tests {
             let env = TestEnv::new();
             let srv = $make_server().route("/", "hello").run();
             let ctrl = controller::new();
-            ctrl.default_profile_and_close("initially-exists.ns.svc.cluster.local");
+            ctrl.profile_tx_default("initially-exists.ns.svc.cluster.local");
 
             let dst_tx0 = ctrl.destination_tx("initially-exists.ns.svc.cluster.local");
             dst_tx0.send_addr(srv.addr);
@@ -229,7 +229,7 @@ macro_rules! generate_tests {
             let srv = $make_server().route("/hi", "hello").run();
             let ctrl = controller::new();
 
-            ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+            ctrl.profile_tx_default("disco.test.svc.cluster.local");
 
             // when the proxy requests the destination, don't respond.
             let _dst_tx = ctrl
@@ -257,8 +257,8 @@ macro_rules! generate_tests {
                 .run();
 
             let ctrl = controller::new();
-            ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-            ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+            ctrl.profile_tx_default("disco.test.svc.cluster.local");
+            ctrl.destination_tx("disco.test.svc.cluster.local").send_addr(srv.addr);
 
             let proxy = proxy::new()
                 .controller(ctrl.run())
@@ -283,7 +283,7 @@ macro_rules! generate_tests {
             let (tx, rx) = oneshot::channel();
 
             let ctrl = controller::new();
-            ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+            ctrl.profile_tx_default("disco.test.svc.cluster.local");
 
             let dst_tx = ctrl.destination_tx("disco.test.svc.cluster.local");
             dst_tx.send_addr(srv.addr);
@@ -326,8 +326,8 @@ macro_rules! generate_tests {
                 }).run();
 
                 let ctrl = controller::new();
-                ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-                ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+                ctrl.profile_tx_default("disco.test.svc.cluster.local");
+                ctrl.destination_tx("disco.test.svc.cluster.local").send_addr(srv.addr);
                 let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
                 let client = $make_client(proxy.outbound, "disco.test.svc.cluster.local");
                 let rsp = client.request(&mut client.request_builder("/strip"));
@@ -347,7 +347,7 @@ macro_rules! generate_tests {
                 }).run();
 
                 let ctrl = controller::new();
-                ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+                ctrl.profile_tx_default("disco.test.svc.cluster.local");
                 let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
                 let client = $make_client(proxy.inbound, "disco.test.svc.cluster.local");
                 let rsp = client.request(client.request_builder("/strip").header(REMOTE_IP_HEADER, IP_1));
@@ -363,8 +363,8 @@ macro_rules! generate_tests {
 
                 let srv = $make_server().route("/set", "hello").run();
                 let ctrl = controller::new();
-                ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-                ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+                ctrl.profile_tx_default("disco.test.svc.cluster.local");
+                ctrl.destination_tx("disco.test.svc.cluster.local").send_addr(srv.addr);
                 let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
                 let client = $make_client(proxy.outbound, "disco.test.svc.cluster.local");
                 let rsp = client.request(&mut client.request_builder("/set"));
@@ -469,8 +469,8 @@ macro_rules! generate_tests {
                     ], None, vec![]));
 
                     ctrl
-                        .destination_and_close(FOO, foo.addr);
-                    ctrl.destination_and_close(BAR, bar.addr);
+                        .destination_tx(FOO).send_addr(foo.addr);
+                    ctrl.destination_tx(BAR).send_addr(bar.addr);
 
                     Fixture {
                         foo_reqs, bar_reqs,
@@ -693,7 +693,7 @@ mod http2 {
 
         let host = "disco.test.svc.cluster.local";
         let ctrl = controller::new();
-        ctrl.default_profile_and_close(host);
+        ctrl.profile_tx_default(host);
         let dst = ctrl.destination_tx(host);
         // Start by "knowing" the first server...
         dst.send_addr(srv1.addr);
@@ -765,7 +765,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
         let dst = ctrl.destination_tx("disco.test.svc.cluster.local");
         dst.send_h2_hinted(srv.addr);
 
@@ -794,7 +794,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
 
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
@@ -822,7 +822,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
 
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
@@ -848,8 +848,9 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
-        ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
+        ctrl.destination_tx("disco.test.svc.cluster.local")
+            .send_addr(srv.addr);
         let proxy = proxy::new().controller(ctrl.run()).run();
 
         let client = client::http1(proxy.outbound, "disco.test.svc.cluster.local");
@@ -876,7 +877,7 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
 
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
 
@@ -905,8 +906,9 @@ mod proxy_to_proxy {
             .run();
 
         let ctrl = controller::new();
-        ctrl.destination_and_close("disco.test.svc.cluster.local", srv.addr);
-        ctrl.default_profile_and_close("disco.test.svc.cluster.local");
+        ctrl.destination_tx("disco.test.svc.cluster.local")
+            .send_addr(srv.addr);
+        ctrl.profile_tx_default("disco.test.svc.cluster.local");
         let proxy = proxy::new().controller(ctrl.run()).run();
 
         let client = client::http1(proxy.outbound, "disco.test.svc.cluster.local");

@@ -35,7 +35,7 @@ impl Fixture {
 
     fn inbound_with_server(srv: server::Listening) -> Self {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("test.test.svc.cluster.local");
+        ctrl.profile_tx_default("test.test.svc.cluster.local");
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
         let metrics = client::http1(proxy.metrics, "localhost");
 
@@ -49,8 +49,9 @@ impl Fixture {
 
     fn outbound_with_server(srv: server::Listening) -> Self {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("test.test.svc.cluster.local");
-        ctrl.destination_and_close("tele.test.svc.cluster.local", srv.addr);
+        ctrl.profile_tx_default("test.test.svc.cluster.local");
+        ctrl.destination_tx("tele.test.svc.cluster.local")
+            .send_addr(srv.addr);
         let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
         let metrics = client::http1(proxy.metrics, "localhost");
 
@@ -82,7 +83,7 @@ impl TcpFixture {
 
     fn inbound() -> Self {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("test.test.svc.cluster.local");
+        ctrl.profile_tx_default("test.test.svc.cluster.local");
         let proxy = proxy::new()
             .controller(ctrl.run())
             .inbound(TcpFixture::server())
@@ -99,7 +100,7 @@ impl TcpFixture {
 
     fn outbound() -> Self {
         let ctrl = controller::new();
-        ctrl.default_profile_and_close("test.test.svc.cluster.local");
+        ctrl.profile_tx_default("test.test.svc.cluster.local");
         let proxy = proxy::new()
             .controller(ctrl.run())
             .outbound(TcpFixture::server())
@@ -700,8 +701,9 @@ fn metrics_have_no_double_commas() {
     let outbound_srv = server::new().route("/hey", "hello").run();
 
     let ctrl = controller::new();
-    ctrl.default_profile_and_close("tele.test.svc.cluster.local");
-    ctrl.destination_and_close("tele.test.svc.cluster.local", outbound_srv.addr);
+    ctrl.profile_tx_default("tele.test.svc.cluster.local");
+    ctrl.destination_tx("tele.test.svc.cluster.local")
+        .send_addr(outbound_srv.addr);
     let proxy = proxy::new()
         .controller(ctrl.run())
         .inbound(inbound_srv)

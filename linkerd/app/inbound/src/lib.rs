@@ -179,6 +179,7 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
+                .push(trace::layer(|src: &tls::accept::Meta| info_span!("router")))
                 .push_per_make(
                     svc::layers()
                         .push(svc::layer::mk(orig_proto::Downgrade::new))

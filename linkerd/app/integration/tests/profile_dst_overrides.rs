@@ -71,11 +71,13 @@ fn add_a_dst_override() {
     let apex = "apex";
     let apex_svc = Service::new(apex);
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
-    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_tx(&apex_svc.authority())
+        .send_addr(apex_svc.svc.addr);
 
     let leaf = "leaf";
     let leaf_svc = Service::new(leaf);
-    ctrl.destination_and_close(&leaf_svc.authority(), leaf_svc.svc.addr);
+    ctrl.destination_tx(&leaf_svc.authority())
+        .send_addr(leaf_svc.svc.addr);
 
     let proxy = proxy::new().controller(ctrl.run()).run();
     let client = client::http1(proxy.outbound, apex_svc.authority());
@@ -113,14 +115,17 @@ fn add_multiple_dst_overrides() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_tx(&apex_svc.authority())
+        .send_addr(apex_svc.svc.addr);
 
     let leaf_a = "leaf-a";
     let leaf_a_svc = Service::new(leaf_a);
-    ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
+    ctrl.destination_tx(&leaf_a_svc.authority())
+        .send_addr(leaf_a_svc.svc.addr);
     let leaf_b = "leaf-b";
     let leaf_b_svc = Service::new(leaf_b);
-    ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
+    ctrl.destination_tx(&leaf_b_svc.authority())
+        .send_addr(leaf_b_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(pb::DestinationProfile::default());
@@ -166,13 +171,16 @@ fn set_a_dst_override_weight_to_zero() {
 
     let apex = "apex";
     let apex_svc = Service::new(apex);
-    ctrl.destination_and_close(&apex_svc.authority(), apex_svc.svc.addr);
+    ctrl.destination_tx(&apex_svc.authority())
+        .send_addr(apex_svc.svc.addr);
     let leaf_a = "leaf-a";
     let leaf_a_svc = Service::new(leaf_a);
-    ctrl.destination_and_close(&leaf_a_svc.authority(), leaf_a_svc.svc.addr);
+    ctrl.destination_tx(&leaf_a_svc.authority())
+        .send_addr(leaf_a_svc.svc.addr);
     let leaf_b = "leaf-b";
     let leaf_b_svc = Service::new(leaf_b);
-    ctrl.destination_and_close(&leaf_b_svc.authority(), leaf_b_svc.svc.addr);
+    ctrl.destination_tx(&leaf_b_svc.authority())
+        .send_addr(leaf_b_svc.svc.addr);
 
     let profile_tx = ctrl.profile_tx(&apex_svc.authority());
     profile_tx.send(profile(

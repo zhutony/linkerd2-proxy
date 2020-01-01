@@ -86,6 +86,12 @@ impl Controller {
         DstSender(tx)
     }
 
+    pub fn destination_tx_err(&self, dest: &str, err: grpc::Code) -> DstSender {
+        let tx = self.destination_tx(dest);
+        tx.send_err(grpc::Status::new(err, "unit test controller fake error"));
+        tx
+    }
+
     pub fn destination_fail(&self, dest: &str, status: grpc::Status) {
         let path = if dest.contains(":") {
             dest.to_owned()
@@ -100,19 +106,6 @@ impl Controller {
             .lock()
             .unwrap()
             .push_back(Dst::Call(dst, Err(status)));
-    }
-
-    pub fn destination_err(&self, dest: &str, err: grpc::Code) {
-        self.destination_tx(dest)
-            .send_err(grpc::Status::new(err, "unit test controller fake error"));
-    }
-
-    pub fn destination_and_close(&self, dest: &str, addr: SocketAddr) {
-        self.destination_tx(dest).send_addr(addr);
-    }
-
-    pub fn destination_close(&self, dest: &str) {
-        drop(self.destination_tx(dest));
     }
 
     pub fn no_more_destinations(&self) {
@@ -130,9 +123,10 @@ impl Controller {
         )
     }
 
-    pub fn default_profile_and_close(&self, dest: &str) {
+    pub fn profile_tx_default(&self, dest: &str) -> ProfileSender {
         let tx = self.profile_tx(dest);
         tx.send(pb::DestinationProfile::default());
+        tx
     }
 
     pub fn profile_tx(&self, dest: &str) -> ProfileSender {
