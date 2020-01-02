@@ -193,7 +193,8 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(trace_context::layer(span_sink.map(|span_sink| {
                             SpanConverter::server(span_sink, trace_labels())
                         })))
-                        .push(metrics.http_handle_time.layer()),
+                        .push(metrics.http_handle_time.layer())
+                        .push_oneshot(),
                 )
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(

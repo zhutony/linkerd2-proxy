@@ -283,6 +283,7 @@ impl<A: OrigDstAddr> Config<A> {
                             SpanConverter::server(span_sink, trace_labels())
                         })))
                         .push(metrics.http_handle_time.layer())
+                        .push_oneshot(),
                 )
                 .push(trace::layer(
                     |src: &tls::accept::Meta| {

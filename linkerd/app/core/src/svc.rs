@@ -6,7 +6,7 @@ use crate::{cache, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
-    self as stack, layer, map_target, pending, per_make, Layer, LayerExt, Make, Shared,
+    self as stack, layer, map_target, oneshot, pending, per_make, Layer, LayerExt, Make, Shared,
 };
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
@@ -80,6 +80,10 @@ impl<L> Layers<L> {
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::new())
+    }
+
+    pub fn push_oneshot(self) -> Layers<Pair<L, oneshot::Layer>> {
+        self.push(oneshot::Layer::new())
     }
 
     pub fn push_per_make<O: Clone>(self, layer: O) -> Layers<Pair<L, per_make::Layer<O>>> {
