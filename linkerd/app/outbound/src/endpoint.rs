@@ -125,7 +125,7 @@ impl http::normalize_uri::ShouldNormalizeUri for Endpoint {
             ..
         } = self.concrete.settings
         {
-            return Some(self.concrete.dst.to_authority());
+            return Some(self.concrete.dst.to_http_authority());
         }
         None
     }
@@ -297,7 +297,7 @@ impl http::normalize_uri::ShouldNormalizeUri for Logical {
             ..
         } = self.settings
         {
-            return Some(self.dst.to_authority());
+            return Some(self.dst.to_http_authority());
         }
         None
     }

@@ -172,13 +172,13 @@ impl<A: OrigDstAddr> Config<A> {
                     map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
                 ))
                 .push_per_make(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
-                .push(trace::layer(
-                    |c: &Concrete| info_span!("balance", addr = %c.dst),
-                ))
                 .serves::<Concrete>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .push(trace::layer(
+                    |c: &Concrete| info_span!("balance", addr = %c.dst),
+                ))
                 .serves::<Concrete>();
 
             let logical_profile_cache = balancer_cache
@@ -203,6 +203,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_make(svc::map_target::layer(Concrete::from))
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .push_per_make(trace::layer(|_: &Logical| info_span!("profile.logical")))
+                .push(trace::layer(|_: &Profile| info_span!("profile")))
                 .serves::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
                 .routes::<(), Logical>()

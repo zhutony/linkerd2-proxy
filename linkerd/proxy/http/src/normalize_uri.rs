@@ -2,6 +2,7 @@ use super::h1;
 use futures::{try_ready, Future, Poll};
 use http::uri::Authority;
 use linkerd2_stack::{layer, Make};
+use tracing::trace;
 
 pub trait ShouldNormalizeUri {
     fn should_normalize_uri(&self) -> Option<Authority>;
@@ -102,12 +103,15 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        if let Some(ref auth) = self.authority {
+        if let Some(ref authority) = self.authority {
+            trace!(%authority, "Normalizing URI");
             debug_assert!(
                 request.version() != http::Version::HTTP_2,
                 "normalize_uri must only be applied to HTTP/1"
             );
-            h1::set_authority(request.uri_mut(), auth.clone());
+            h1::set_authority(request.uri_mut(), authority.clone());
+        } else {
+            trace!("Not normalizing URI");
         }
 
         self.inner.call(request)

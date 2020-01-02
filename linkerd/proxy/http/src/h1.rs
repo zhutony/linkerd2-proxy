@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use super::upgrade::HttpConnect;
 use bytes::BytesMut;
 use http;
@@ -19,32 +21,33 @@ pub fn normalize_our_view_of_uri<B>(req: &mut http::Request<B>) {
     );
 
     // try to parse the Host header
-    if let Some(auth) = authority_from_host(&req) {
-        trace!("using host header");
-        set_authority(req.uri_mut(), auth);
+    if let Some(host) = authority_from_host(&req) {
+        trace!(%host, "normalizing URI");
+        set_authority(req.uri_mut(), host);
         return;
     }
 
-    // last resort is to use the so_original_dst
-    if let Some(addr) = req
-        .extensions()
-        .get::<tls::accept::Meta>()
-        .map(|s| s.addrs.target_addr())
-    {
-        trace!(target.addr = %addr, "using target address");
-        let mut bytes = BytesMut::with_capacity(31);
-        write!(&mut bytes, "{}", addr).expect("socket address display is under 31 bytes");
-        let auth =
-            Authority::from_shared(bytes.freeze()).expect("socket address is valid authority");
-        set_authority(req.uri_mut(), auth);
-        return;
-    }
+    // // last resort is to use the so_original_dst
+    // if let Some(addr) = req
+    //     .extensions()
+    //     .get::<tls::accept::Meta>()
+    //     .map(|s| s.addrs.target_addr())
+    // {
+    //     trace!(target.addr = %addr, "using target address");
+    //     let mut bytes = BytesMut::with_capacity(31);
+    //     write!(&mut bytes, "{}", addr).expect("socket address display is under 31 bytes");
+    //     let auth =
+    //         Authority::from_shared(bytes.freeze()).expect("socket address is valid authority");
+    //     set_authority(req.uri_mut(), auth);
+    //     return;
+    // }
 
     trace!("not normalizing");
 }
 
 /// Convert any URI into its origin-form (relative path part only).
 pub fn set_origin_form(uri: &mut Uri) {
+    trace!(%uri, "Setting origin form");
     let mut parts = mem::replace(uri, Uri::default()).into_parts();
     parts.scheme = None;
     parts.authority = None;

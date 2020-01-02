@@ -121,8 +121,8 @@ impl http::normalize_uri::ShouldNormalizeUri for Target {
             return Some(
                 self.dst_name
                     .as_ref()
-                    .map(|dst| dst.as_authority())
-                    .unwrap_or_else(|| Addr::from(self.addr).to_authority()),
+                    .map(|dst| dst.as_http_authority())
+                    .unwrap_or_else(|| Addr::from(self.addr).to_http_authority()),
             );
         }
         None
