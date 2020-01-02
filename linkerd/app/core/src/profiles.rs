@@ -254,15 +254,14 @@ where
     fn poll_profile(&mut self) -> Poll<profiles::Routes, Error> {
         let span = info_span!("poll_profile");
         let _enter = span.enter();
-        trace!("enter");
         loop {
             self.state = match self.state {
                 State::Disconnected { ref mut backoff } => {
+                    trace!("disconnected");
                     try_ready!(self.service.poll_ready().map_err(Into::<Error>::into));
                     let future = self
                         .service
                         .get_profile(grpc::Request::new(self.request.clone()));
-                    trace!("waiting");
                     State::Waiting {
                         future,
                         backoff: backoff.take(),
@@ -271,39 +270,40 @@ where
                 State::Waiting {
                     ref mut future,
                     ref mut backoff,
-                } => match future.poll() {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(rsp)) => {
-                        trace!("streaming");
-                        State::Streaming(rsp.into_inner())
-                    }
-                    Err(e) => {
-                        warn!("error fetching profile: {:?}", e);
-                        let new_backoff = self.recover.recover(e.into())?;
-                        trace!("disconnected");
-                        State::Disconnected {
-                            backoff: Some(backoff.take().unwrap_or(new_backoff)),
+                } => {
+                    trace!("waiting");
+                    match future.poll() {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(rsp)) => State::Streaming(rsp.into_inner()),
+                        Err(e) => {
+                            let error = e.into();
+                            warn!(%error, "Could not fetch profile");
+                            let new_backoff = self.recover.recover(error)?;
+                            State::Disconnected {
+                                backoff: Some(backoff.take().unwrap_or(new_backoff)),
+                            }
                         }
                     }
-                },
+                }
                 State::Streaming(ref mut s) => {
+                    trace!("streaming");
                     let status = match Self::poll_rx(s) {
                         Ok(Async::NotReady) => return Ok(Async::NotReady),
                         Ok(Async::Ready(Some(profile))) => return Ok(profile.into()),
                         Ok(Async::Ready(None)) => grpc::Status::new(grpc::Code::Ok, ""),
                         Err(status) => status,
                     };
-                    trace!(%status, "backoff");
+                    trace!(?status);
                     let backoff = self.recover.recover(status.into())?;
                     State::Backoff(Some(backoff))
                 }
                 State::Backoff(ref mut backoff) => {
+                    trace!("backoff");
                     let backoff = match backoff.as_mut().unwrap().poll().map_err(Into::into)? {
                         Async::NotReady => return Ok(Async::NotReady),
                         Async::Ready(Some(())) => backoff.take(),
                         Async::Ready(None) => None,
                     };
-                    trace!("disconnected");
                     State::Disconnected { backoff }
                 }
             };

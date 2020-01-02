@@ -3,6 +3,7 @@ use linkerd2_error::Error;
 use linkerd2_stack::Make;
 use std::hash::Hash;
 use tower::util::{Oneshot, ServiceExt};
+use tracing::trace;
 
 pub trait Key<T> {
     type Key: Clone + Eq + Hash;
@@ -61,7 +62,9 @@ where
 
 impl<U, S, K, M> tower::Service<U> for Router<K, M>
 where
+    U: std::fmt::Debug,
     K: Key<U>,
+    K::Key: std::fmt::Debug,
     M: tower::Service<K::Key, Response = S>,
     M::Error: Into<Error>,
     S: tower::Service<U>,
@@ -75,9 +78,10 @@ where
         self.make.poll_ready().map_err(Into::into)
     }
 
-    fn call(&mut self, req: U) -> Self::Future {
-        let key = self.key.key(&req);
-        ResponseFuture::Make(self.make.call(key), Some(req))
+    fn call(&mut self, request: U) -> Self::Future {
+        let key = self.key.key(&request);
+        trace!(?key, ?request, "Routing");
+        ResponseFuture::Make(self.make.call(key), Some(request))
     }
 }
 
@@ -106,11 +110,13 @@ where
         loop {
             *self = match self {
                 ResponseFuture::Make(ref mut fut, ref mut req) => {
+                    trace!("Making");
                     let service = try_ready!(fut.poll().map_err(Into::into));
                     let req = req.take().expect("polled after ready");
                     ResponseFuture::Respond(service.oneshot(req))
                 }
                 ResponseFuture::Respond(ref mut future) => {
+                    trace!("Responding");
                     return future.poll().map_err(Into::into);
                 }
             }

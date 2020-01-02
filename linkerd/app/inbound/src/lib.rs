@@ -121,14 +121,14 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .makes::<Endpoint>()
+                .spawn_cache(router_capacity, router_max_idle_age)
                 .push(trace::layer(|ep: &Endpoint| {
                     info_span!(
                         "endpoint",
                         port = %ep.port,
                         http = ?ep.settings,
                     )
-                }))
-                .spawn_cache(router_capacity, router_max_idle_age);
+                }));
 
             // Determine the target for each request, obtain a profile route for
             // that target, and dispatch the request to it.
@@ -156,6 +156,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_make(svc::lock::Layer::new())
                 .makes_clone::<Profile>()
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .push(trace::layer(|_: &Profile| info_span!("profile")))
                 .serves::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
                 .make(());

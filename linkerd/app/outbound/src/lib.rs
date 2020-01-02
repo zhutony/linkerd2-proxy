@@ -139,10 +139,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(L5D_REQUIRE_ID))
                         .per_make(),
                 )
-                .push(require_identity_on_endpoint::layer())
-                .push(trace::layer(|endpoint: &Endpoint| {
-                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }));
+                .push(require_identity_on_endpoint::layer());
 
             let endpoint_stack = connect_stack
                 .clone()
@@ -153,6 +150,10 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(orig_proto_upgrade::layer())
                 .push(endpoint_layers.clone())
+                .serves::<Endpoint>()
+                .push(trace::layer(|endpoint: &Endpoint| {
+                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                }))
                 .serves::<Endpoint>();
 
             // Resolves the target via the control plane and balances requests
@@ -253,6 +254,9 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
+                .push(trace::layer(|endpoint: &Endpoint| {
+                    info_span!("bypass", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                }))
                 .serves::<Endpoint>();
 
             let server_stack = svc::stack(logical_stack)

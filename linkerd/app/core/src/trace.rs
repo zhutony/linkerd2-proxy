@@ -193,10 +193,10 @@ pub fn layer<G>(get_span: G) -> self::layer::Layer<G> {
 
 pub mod layer {
     use super::GetSpan;
-    use futures::{Async, Future, Poll};
+    use futures::{future, Async, Future, Poll};
     use linkerd2_error::Error;
     use linkerd2_stack::{Make, Proxy};
-    use tracing::{trace, Span};
+    use tracing::{info_span, trace, Span};
     use tracing_futures::{Instrument, Instrumented};
 
     #[derive(Clone, Debug)]
@@ -239,7 +239,12 @@ pub mod layer {
         }
     }
 
-    impl<T, G: GetSpan<T>, M: Make<T>> Make<T> for MakeSpan<G, M> {
+    impl<T, G, M> Make<T> for MakeSpan<G, M>
+    where
+        T: std::fmt::Debug,
+        G: GetSpan<T>,
+        M: Make<T>,
+    {
         type Service = SetSpan<M::Service>;
 
         fn make(&self, target: T) -> Self::Service {
@@ -266,15 +271,29 @@ pub mod layer {
         type Future = SetSpan<M::Future>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-            trace!("make poll_ready");
-            self.make.poll_ready().map_err(Into::into)
+            let span = info_span!("make");
+            let _enter = span.enter();
+
+            trace!("poll_ready");
+            match self.make.poll_ready() {
+                Err(e) => {
+                    let error = e.into();
+                    trace!(%error);
+                    Err(error)
+                }
+                Ok(ready) => {
+                    trace!(ready = ready.is_ready());
+                    Ok(ready)
+                }
+            }
         }
 
         fn call(&mut self, target: T) -> Self::Future {
+            info_span!("make").in_scope(|| trace!("call"));
+
             let span = self.get_span.get_span(&target);
             let _enter = span.enter();
 
-            trace!(?target, "make");
             SetSpan {
                 inner: self.make.call(target),
                 span: span.clone(),
@@ -292,25 +311,34 @@ pub mod layer {
 
         fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
             let _enter = self.span.enter();
+            let span = info_span!("making");
+            let _enter = span.enter();
 
-            trace!("poll make future");
             match self.inner.poll() {
                 Err(e) => {
                     let error = e.into();
-                    trace!(%error, "make failed");
+                    trace!(%error);
                     Err(error)
                 }
-                Ok(Async::NotReady) => Ok(Async::NotReady),
-                Ok(Async::Ready(inner)) => Ok(Async::Ready(SetSpan {
-                    inner,
-                    span: self.span.clone(),
-                })),
+                Ok(Async::NotReady) => {
+                    trace!(ready = false);
+                    Ok(Async::NotReady)
+                }
+                Ok(Async::Ready(inner)) => {
+                    trace!(ready = true);
+                    let svc = SetSpan {
+                        inner,
+                        span: self.span.clone(),
+                    };
+                    Ok(svc.into())
+                }
             }
         }
     }
 
     impl<Req, S, P> Proxy<Req, S> for SetSpan<P>
     where
+        Req: std::fmt::Debug,
         P: Proxy<Req, S>,
         S: tower::Service<P::Request>,
     {
@@ -319,33 +347,48 @@ pub mod layer {
         type Error = P::Error;
         type Future = Instrumented<P::Future>;
 
-        fn proxy(&self, svc: &mut S, req: Req) -> Self::Future {
+        fn proxy(&self, svc: &mut S, request: Req) -> Self::Future {
             let _enter = self.span.enter();
-            self.inner.proxy(svc, req).instrument(self.span.clone())
+            trace!(?request, "proxy");
+            self.inner.proxy(svc, request).instrument(self.span.clone())
         }
     }
 
-    impl<Req, S: tower::Service<Req>> tower::Service<Req> for SetSpan<S> {
+    impl<Req, S> tower::Service<Req> for SetSpan<S>
+    where
+        Req: std::fmt::Debug,
+        S: tower::Service<Req>,
+        S::Error: Into<Error>,
+    {
         type Response = S::Response;
-        type Error = S::Error;
-        type Future = Instrumented<S::Future>;
+        type Error = Error;
+        type Future = future::MapErr<Instrumented<S::Future>, fn(S::Error) -> Error>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
             let _enter = self.span.enter();
 
-            match self.inner.poll_ready()? {
-                Async::Ready(()) => Ok(Async::Ready(())),
-                Async::NotReady => {
-                    trace!(ready = false, "poll_ready");
-                    Ok(Async::NotReady)
+            trace!("poll ready");
+            match self.inner.poll_ready() {
+                Err(e) => {
+                    let error = e.into();
+                    trace!(%error);
+                    Err(error)
+                }
+                Ok(ready) => {
+                    trace!(ready = ready.is_ready());
+                    Ok(ready)
                 }
             }
         }
 
-        fn call(&mut self, req: Req) -> Self::Future {
+        fn call(&mut self, request: Req) -> Self::Future {
             let _enter = self.span.enter();
 
-            self.inner.call(req).instrument(self.span.clone())
+            trace!(?request, "call");
+            self.inner
+                .call(request)
+                .instrument(self.span.clone())
+                .map_err(Into::into)
         }
     }
 }

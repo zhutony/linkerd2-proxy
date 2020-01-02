@@ -35,7 +35,7 @@ impl Fixture {
 
     fn inbound_with_server(srv: server::Listening) -> Self {
         let ctrl = controller::new();
-        ctrl.profile_tx_default("test.test.svc.cluster.local");
+        ctrl.profile_tx_default("tele.test.svc.cluster.local");
         let proxy = proxy::new().controller(ctrl.run()).inbound(srv).run();
         let metrics = client::http1(proxy.metrics, "localhost");
 
@@ -49,7 +49,7 @@ impl Fixture {
 
     fn outbound_with_server(srv: server::Listening) -> Self {
         let ctrl = controller::new();
-        ctrl.profile_tx_default("test.test.svc.cluster.local");
+        ctrl.profile_tx_default("tele.test.svc.cluster.local");
         ctrl.destination_tx("tele.test.svc.cluster.local")
             .send_addr(srv.addr);
         let proxy = proxy::new().controller(ctrl.run()).outbound(srv).run();
@@ -83,7 +83,7 @@ impl TcpFixture {
 
     fn inbound() -> Self {
         let ctrl = controller::new();
-        ctrl.profile_tx_default("test.test.svc.cluster.local");
+        //ctrl.profile_tx_default("tele.test.svc.cluster.local");
         let proxy = proxy::new()
             .controller(ctrl.run())
             .inbound(TcpFixture::server())
@@ -100,7 +100,7 @@ impl TcpFixture {
 
     fn outbound() -> Self {
         let ctrl = controller::new();
-        ctrl.profile_tx_default("test.test.svc.cluster.local");
+        //ctrl.profile_tx_default("tele.test.svc.cluster.local");
         let proxy = proxy::new()
             .controller(ctrl.run())
             .outbound(TcpFixture::server())

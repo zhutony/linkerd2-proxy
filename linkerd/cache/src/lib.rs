@@ -3,12 +3,12 @@
 use self::cache::Cache;
 pub use self::layer::Layer;
 pub use self::purge::Purge;
-use futures::{future, try_ready, Async, Poll};
+use futures::{future, Async, Poll};
 use linkerd2_stack::Make;
 use std::hash::Hash;
 use std::time::Duration;
 use tokio::sync::lock::{Lock, LockGuard};
-use tracing::debug;
+use tracing::{debug, trace};
 
 mod cache;
 pub mod error;
@@ -76,7 +76,15 @@ where
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         if self.lock.is_none() {
-            let lock = try_ready!(Ok(self.cache.poll_lock()));
+            let lock = match self.cache.poll_lock() {
+                Async::NotReady => {
+                    trace!("Waiting to acquire lock");
+                    return Ok(Async::NotReady);
+                }
+                Async::Ready(lock) => lock,
+            };
+
+            trace!("Lock acquired");
             self.lock = Some(lock);
         }
 
