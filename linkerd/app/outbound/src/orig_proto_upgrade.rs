@@ -17,6 +17,7 @@ pub struct MakeSvc<M> {
 pub struct MakeFuture<F> {
     can_upgrade: bool,
     inner: F,
+    was_absolute: bool,
 }
 
 pub fn layer() -> Layer {
@@ -40,27 +41,22 @@ where
     type Service = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
 
     fn make(&self, mut endpoint: Endpoint) -> Self::Service {
-        let can_upgrade = endpoint.can_use_orig_proto();
-
-        if can_upgrade {
-            trace!(
-                "supporting {} upgrades for endpoint={:?}",
-                orig_proto::L5D_ORIG_PROTO,
-                endpoint,
-            );
-            endpoint.concrete.settings = Settings::Http2;
+        if !endpoint.can_use_orig_proto() {
+            trace!("Endpoint does not support transparent HTTP/2 upgrades");
+            return svc::Either::B(self.inner.make(endpoint));
         }
+
         let was_absolute = endpoint.concrete.settings.was_absolute_form();
+        trace!(
+            header = %orig_proto::L5D_ORIG_PROTO,
+            %was_absolute,
+            "Endpoint supports transparent HTTP/2 upgrades",
+        );
+        endpoint.concrete.settings = Settings::Http2;
 
-        let inner = self.inner.make(endpoint);
-
-        if can_upgrade {
-            let mut upgrade = orig_proto::Upgrade::new(inner);
-            upgrade.absolute_form = was_absolute;
-            svc::Either::A(upgrade)
-        } else {
-            svc::Either::B(inner)
-        }
+        let mut upgrade = orig_proto::Upgrade::new(self.inner.make(endpoint));
+        upgrade.absolute_form = was_absolute;
+        svc::Either::A(upgrade)
     }
 }
 
@@ -79,17 +75,22 @@ where
     fn call(&mut self, mut endpoint: Endpoint) -> Self::Future {
         let can_upgrade = endpoint.can_use_orig_proto();
 
+        let was_absolute = endpoint.concrete.settings.was_absolute_form();
         if can_upgrade {
             trace!(
-                "supporting {} upgrades for endpoint={:?}",
-                orig_proto::L5D_ORIG_PROTO,
-                endpoint,
+                header = %orig_proto::L5D_ORIG_PROTO,
+                %was_absolute,
+                "Endpoint supports transparent HTTP/2 upgrades",
             );
             endpoint.concrete.settings = Settings::Http2;
         }
 
         let inner = self.inner.call(endpoint);
-        MakeFuture { can_upgrade, inner }
+        MakeFuture {
+            can_upgrade,
+            inner,
+            was_absolute,
+        }
     }
 }
 
@@ -106,7 +107,9 @@ where
         let inner = try_ready!(self.inner.poll());
 
         if self.can_upgrade {
-            Ok(svc::Either::A(orig_proto::Upgrade::new(inner)).into())
+            let mut upgrade = orig_proto::Upgrade::new(inner);
+            upgrade.absolute_form = self.was_absolute;
+            Ok(svc::Either::A(upgrade).into())
         } else {
             Ok(svc::Either::B(inner).into())
         }

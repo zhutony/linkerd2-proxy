@@ -321,8 +321,11 @@ macro_rules! http1_tests {
             let host = "foo.bar";
             let srv = server::http1()
                 .route_fn("/", move |req| {
+                    println!("req={:?}; expected={:?}", req.headers()["host"], host);
                     assert_eq!(req.headers()["host"], host);
+                    println!("req={}; expected={}", req.uri().to_string(), auth);
                     assert_eq!(req.uri().to_string(), format!("http://{}/", auth));
+                    println!("*** ALL CLEAR ***");
                     Response::new("".into())
                 })
                 .run();

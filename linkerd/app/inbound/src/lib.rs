@@ -135,7 +135,6 @@ impl<A: OrigDstAddr> Config<A> {
             let profile_cache = svc::stack(endpoint_cache)
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
-                .push(normalize_uri::layer())
                 .push(tap_layer)
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
@@ -166,6 +165,7 @@ impl<A: OrigDstAddr> Config<A> {
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_make_ready()
+                .push(normalize_uri::layer())
                 .push_per_make(
                     svc::layers()
                         .push_ready_timeout(Duration::from_secs(10))
