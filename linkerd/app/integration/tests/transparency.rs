@@ -199,17 +199,20 @@ fn tcp_connections_close_if_client_closes() {
 
     let srv = server::tcp()
         .accept_fut(move |sock| {
+            println!("Accepted; Reading");
             tokio_io::io::read(sock, vec![0; 1024])
                 .and_then(move |(sock, vec, n)| {
                     assert_eq!(&vec[..n], msg1.as_bytes());
-
+                    println!("Writing");
                     tokio_io::io::write_all(sock, msg2.as_bytes())
                 })
                 .and_then(|(sock, _)| {
                     // lets read again, but we should get eof
+                    println!("Reading");
                     tokio_io::io::read(sock, [0; 16])
                 })
                 .map(move |(_sock, _vec, n)| {
+                    println!("Closing");
                     assert_eq!(n, 0);
                     tx.send(()).unwrap();
                 })
@@ -225,6 +228,7 @@ fn tcp_connections_close_if_client_closes() {
     assert_eq!(tcp_client.read(), msg2.as_bytes());
 
     drop(tcp_client);
+    println!("Dropped");
 
     // rx will be fulfilled when our tcp accept_fut sees
     // a socket disconnect, which is what we are testing for.

@@ -3,6 +3,7 @@ use linkerd2_duplex::Duplex;
 use linkerd2_error::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
+use tracing::trace;
 
 pub fn forward<C>(connect: C) -> Forward<C> {
     Forward { connect }
@@ -64,14 +65,22 @@ where
                     ref mut connect,
                     ref mut io,
                 } => {
+                    trace!("Connecting");
                     let client_io = try_ready!(connect.poll().map_err(Into::into));
                     let server_io = io.take().expect("illegal state");
                     ForwardFuture::Duplex(Duplex::new(server_io, client_io))
                 }
                 ForwardFuture::Duplex(ref mut fut) => {
+                    trace!("Forwarding");
                     return fut.poll().map_err(Into::into);
                 }
             }
         }
+    }
+}
+
+impl<I, F: Future> Drop for ForwardFuture<I, F> {
+    fn drop(&mut self) {
+        trace!("Drop")
     }
 }
