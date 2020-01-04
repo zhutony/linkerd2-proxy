@@ -102,6 +102,8 @@ impl<A: OrigDstAddr> Config<A> {
             // Establishes connections to the local application (for both
             // TCP forwarding and HTTP proxying).
             let connect_stack = svc::stack(connect::svc(connect.keepalive))
+                // This is only here so that the boxed transport propagates shutdown properly.
+                .push(tls::client::layer(local_identity.clone()))
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 
