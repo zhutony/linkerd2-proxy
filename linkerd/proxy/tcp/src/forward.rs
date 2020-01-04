@@ -72,15 +72,11 @@ where
                 }
                 ForwardFuture::Duplex(ref mut fut) => {
                     trace!("Forwarding");
-                    return fut.poll().map_err(Into::into);
+                    let state = fut.poll().map_err(Into::into);
+                    trace!(?state);
+                    return state;
                 }
             }
         }
-    }
-}
-
-impl<I, F: Future> Drop for ForwardFuture<I, F> {
-    fn drop(&mut self) {
-        trace!("Drop")
     }
 }
