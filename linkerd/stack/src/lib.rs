@@ -2,6 +2,7 @@
 
 pub mod layer;
 pub mod make;
+pub mod map_response;
 pub mod map_target;
 pub mod oneshot;
 pub mod pending;
