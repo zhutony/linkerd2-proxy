@@ -188,14 +188,14 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(strip_header::request::layer(L5D_REMOTE_IP))
                         .push(strip_header::request::layer(L5D_CLIENT_ID))
                         .push(strip_header::response::layer(L5D_SERVER_ID))
+                        .push_oneshot()
                         .push_concurrency_limit(buffer.max_in_flight)
                         .push_load_shed()
                         .push(errors::layer())
                         .push(trace_context::layer(span_sink.map(|span_sink| {
                             SpanConverter::server(span_sink, trace_labels())
                         })))
-                        .push(metrics.http_handle_time.layer())
-                        .push_oneshot(),
+                        .push(metrics.http_handle_time.layer()),
                 )
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
