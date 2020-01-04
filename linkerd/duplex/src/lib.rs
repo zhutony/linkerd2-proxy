@@ -58,8 +58,13 @@ where
         // return early if the first half isn't ready, but the other half
         // could make progress.
         trace!("poll");
-        info_span!("in").in_scope(|| self.half_in.copy_into(&mut self.half_out))?;
-        info_span!("out").in_scope(|| self.half_out.copy_into(&mut self.half_in))?;
+        info_span!("in>out").in_scope(|| self.half_in.copy_into(&mut self.half_out))?;
+        info_span!("out>in").in_scope(|| {
+            self.half_out.copy_into(&mut self.half_in).map_err(|error| {
+                trace!(%error);
+                error
+            })
+        })?;
         trace!(half_in.done = %self.half_in.is_done(),half_out.done = %self.half_out.is_done());
         if self.half_in.is_done() && self.half_out.is_done() {
             Ok(Async::Ready(()))
@@ -94,37 +99,34 @@ where
             trace!("Already shutdown");
             return Ok(Async::Ready(()));
         }
-        loop {
+        while self.buf.is_some() {
             try_ready!(self.read());
             try_ready!(self.write_into(dst));
-            if self.buf.is_none() {
-                trace!("Shutting down");
-                debug_assert!(!dst.is_shutdown, "attempted to shut down destination twice");
-                try_ready!(dst.io.shutdown());
-                trace!("Shutdown complete");
-                dst.is_shutdown = true;
-
-                return Ok(Async::Ready(()));
-            }
         }
+
+        trace!("Shutting down");
+        debug_assert!(!dst.is_shutdown, "attempted to shut down destination twice");
+        try_ready!(dst.io.shutdown());
+        trace!("Shutdown complete");
+        dst.is_shutdown = true;
+
+        return Ok(Async::Ready(()));
     }
 
     fn read(&mut self) -> Poll<(), io::Error> {
-        let mut is_eof = false;
         if let Some(ref mut buf) = self.buf {
             if !buf.has_remaining() {
                 buf.reset();
 
                 trace!("Reading");
                 let n = try_ready!(self.io.read_buf(buf));
-                trace!("Read {}B", n);
-
-                is_eof = n == 0;
+                if n > 0 {
+                    trace!(bytes=%n);
+                } else {
+                    trace!("End of stream");
+                    self.buf = None;
+                }
             }
-        }
-        if is_eof {
-            trace!("End of stream");
-            self.buf = None;
         }
 
         Ok(Async::Ready(()))
