@@ -27,7 +27,7 @@ use linkerd2_app_core::{
     spans::SpanConverter,
     svc::{self, Make},
     trace, trace_context,
-    transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
+    transport::{self, connect, io::BoxedIo, tls, OrigDstAddr, SysOrigDstAddr},
     Addr, DispatchDeadline, Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP,
     L5D_SERVER_ID,
 };
@@ -102,8 +102,7 @@ impl<A: OrigDstAddr> Config<A> {
             // Establishes connections to the local application (for both
             // TCP forwarding and HTTP proxying).
             let connect_stack = svc::stack(connect::svc(connect.keepalive))
-                // This is only here so that the boxed transport propagates shutdown properly.
-                .push(tls::client::layer(local_identity.clone()))
+                .push_map_response(BoxedIo::new) // Ensures the transport propagates shutdown properly.
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 

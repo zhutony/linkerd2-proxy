@@ -15,6 +15,23 @@ pub struct MapResponse<S, R> {
     response_map: R,
 }
 
+impl<R> Layer<R> {
+    pub fn new(response_map: R) -> Self {
+        Layer(response_map)
+    }
+}
+
+impl<S, R: Clone> tower::layer::Layer<S> for Layer<R> {
+    type Service = MapResponse<S, R>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        Self::Service {
+            inner,
+            response_map: self.0.clone(),
+        }
+    }
+}
+
 impl<T, S, R> tower::Service<T> for MapResponse<S, R>
 where
     S: tower::Service<T>,

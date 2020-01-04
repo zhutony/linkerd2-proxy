@@ -6,7 +6,8 @@ use crate::{cache, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
-    self as stack, layer, map_target, oneshot, pending, per_make, Layer, LayerExt, Make, Shared,
+    self as stack, layer, map_response, map_target, oneshot, pending, per_make, Layer, LayerExt,
+    Make, Shared,
 };
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
@@ -158,6 +159,14 @@ impl<S> Stack<S> {
 
     pub fn push_per_make<L: Clone>(self, layer: L) -> Stack<per_make::PerMake<L, S>> {
         self.push(per_make::layer(layer))
+    }
+
+    pub fn push_map_response<T, R>(self, map_response: R) -> Stack<map_response::MapResponse<S, R>>
+    where
+        S: tower::Service<T>,
+        R: map_response::ResponseMap<S::Response> + Clone,
+    {
+        self.push(map_response::Layer::new(map_response))
     }
 
     pub fn spawn_cache<T>(
