@@ -1,9 +1,7 @@
-use super::Endpoint;
+use super::HttpEndpoint;
 use crate::proxy::http::{orig_proto, settings::Settings};
 use crate::svc;
 use futures::{try_ready, Future, Poll};
-use http;
-use std::marker::PhantomData;
 use tracing::trace;
 
 #[derive(Clone, Debug)]
@@ -34,13 +32,13 @@ impl<M> svc::Layer<M> for Layer {
 
 // === impl MakeSvc ===
 
-impl<M> svc::Make<Endpoint> for MakeSvc<M>
+impl<M> svc::Make<HttpEndpoint> for MakeSvc<M>
 where
-    M: svc::Make<Endpoint>,
+    M: svc::Make<HttpEndpoint>,
 {
     type Service = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
 
-    fn make(&self, mut endpoint: Endpoint) -> Self::Service {
+    fn make(&self, mut endpoint: HttpEndpoint) -> Self::Service {
         if !endpoint.can_use_orig_proto() {
             trace!("Endpoint does not support transparent HTTP/2 upgrades");
             return svc::Either::B(self.inner.make(endpoint));
@@ -60,9 +58,9 @@ where
     }
 }
 
-impl<M> svc::Service<Endpoint> for MakeSvc<M>
+impl<M> svc::Service<HttpEndpoint> for MakeSvc<M>
 where
-    M: svc::Service<Endpoint>,
+    M: svc::Service<HttpEndpoint>,
 {
     type Response = svc::Either<orig_proto::Upgrade<M::Response>, M::Response>;
     type Error = M::Error;
@@ -72,7 +70,7 @@ where
         self.inner.poll_ready()
     }
 
-    fn call(&mut self, mut endpoint: Endpoint) -> Self::Future {
+    fn call(&mut self, mut endpoint: HttpEndpoint) -> Self::Future {
         let can_upgrade = endpoint.can_use_orig_proto();
 
         let was_absolute = endpoint.concrete.settings.was_absolute_form();

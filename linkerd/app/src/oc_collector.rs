@@ -48,7 +48,7 @@ impl Config {
             Config::Disabled => Ok(OcCollector::Disabled),
             Config::Enabled { control, hostname } => {
                 let addr = control.addr;
-                let svc = svc::stack(connect::svc(control.connect.keepalive))
+                let svc = svc::stack(connect::Connect::new(control.connect.keepalive))
                     .push(tls::client::layer(identity))
                     .push_timeout(control.connect.timeout)
                     // TODO: perhaps rename from "control" to "grpc"

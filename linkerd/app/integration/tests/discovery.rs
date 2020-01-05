@@ -25,7 +25,7 @@ macro_rules! generate_tests {
         }
 
         #[test]
-        fn outbound_router_capacity() {
+        fn outbound_cache_capacity() {
             let _ = trace_init();
             let srv = $make_server().route("/", "hello").run();
             let srv_addr = srv.addr;

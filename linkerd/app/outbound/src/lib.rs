@@ -3,14 +3,14 @@
 //! The outound proxy is responsible for routing traffic from the local
 //! application to external network endpoints.
 
-#![allow(warnings, rust_2018_idioms)]
+#![deny(warnings, rust_2018_idioms)]
 
 pub use self::endpoint::{
-    Concrete, Endpoint, Logical, LogicalOrFallbackTarget, Profile, ProfileTarget,
+    Concrete, HttpEndpoint, Logical, LogicalOrFallbackTarget, Profile, ProfileTarget, TcpEndpoint,
 };
 use futures::future;
 use linkerd2_app_core::{
-    self as core, cache, classify,
+    classify,
     config::{ProxyConfig, ServerConfig},
     dns, drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
@@ -28,14 +28,13 @@ use linkerd2_app_core::{
     svc::{self, Make},
     trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
-    Addr, Conditional, DispatchDeadline, Error, ProxyMetrics, CANONICAL_DST_HEADER,
-    DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
+    Conditional, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER, L5D_CLIENT_ID,
+    L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tower_grpc::{self as grpc, generic::client::GrpcService};
 use tracing::info_span;
 
 #[allow(dead_code)] // TODO #2597
@@ -98,8 +97,8 @@ impl<A: OrigDstAddr> Config<A> {
                 ProxyConfig {
                     server: ServerConfig { bind, h2_settings },
                     connect,
-                    router_capacity,
-                    router_max_idle_age,
+                    cache_capacity,
+                    cache_max_idle_age,
                     disable_protocol_detection_for_ports,
                     service_acquisition_timeout,
                     max_in_flight_requests,
@@ -115,15 +114,23 @@ impl<A: OrigDstAddr> Config<A> {
         let serve = Box::new(future::lazy(move || {
             // Establishes connections to remote peers (for both TCP
             // forwarding and HTTP proxying).
-            let connect_stack = svc::stack(connect::svc(connect.keepalive))
+            let tcp_connect = svc::stack(connect::Connect::new(connect.keepalive))
                 // Initiates mTLS if the target is configured with identity.
                 .push(tls::client::layer(local_identity))
                 // Limits the time we wait for a connection to be established.
-                .push_timeout(connect.timeout)
-                .push(metrics.transport.layer_connect(TransportLabels));
+                .push_timeout(connect.timeout);
+
+            // Forwards TCP streams that cannot be decoded as HTTP.
+            let tcp_forward = tcp_connect
+                .clone()
+                .push(metrics.transport.layer_connect(TransportLabels))
+                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                    TcpEndpoint::from(meta.addrs.target_addr())
+                }))
+                .push(svc::layer::mk(tcp::Forward::new));
 
             // Registers the stack with Tap, Metrics, and OpenCensus tracing export.
-            let endpoint_observability = svc::layers()
+            let http_endpoint_observability = svc::layers()
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint.clone(),
@@ -136,7 +143,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Checks the headers to validate that a client-specified required
             // identity matches the configured identity.
-            let endpoint_identity_headers = svc::layers()
+            let http_endpoint_identity_headers = svc::layers()
                 .push_per_make(
                     svc::layers()
                         .push(http::strip_header::response::layer(L5D_REMOTE_IP))
@@ -145,8 +152,9 @@ impl<A: OrigDstAddr> Config<A> {
                 )
                 .push(require_identity_on_endpoint::layer());
 
-            let balancer_endpoint_stack = connect_stack
+            let http_balancer_endpoint = tcp_connect
                 .clone()
+                .push(metrics.transport.layer_connect(TransportLabels))
                 // Initiates an HTTP client on the underlying transport.
                 // Prior-knowledge HTTP/2 is typically used (i.e. when
                 // communicating with other proxies); though HTTP/1.x fallback
@@ -157,50 +165,47 @@ impl<A: OrigDstAddr> Config<A> {
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push(endpoint_observability.clone())
-                .push(endpoint_identity_headers.clone())
+                .push(http_endpoint_observability.clone())
+                .push(http_endpoint_identity_headers.clone())
                 // Upgrades HTTP/1 requests to be transported over HTTP/2
                 // connections.
                 //
                 // This sets headers so that the inbound proxy can downgrade the
                 // request properly.
                 .push(orig_proto_upgrade::layer())
-                .serves::<Endpoint>()
-                .push(trace::layer(|endpoint: &Endpoint| {
+                .serves::<HttpEndpoint>()
+                .push(trace::layer(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<Endpoint>();
+                .serves::<HttpEndpoint>();
 
             // Resolves each target via the control plane, producing a over all
             // endpoints returned from the destination service.
+            //
+            // This
             let discover = {
-                //
                 const BUFFER_CAPACITY: usize = 10;
-                discover::Layer::new(
-                    BUFFER_CAPACITY,
-                    router_max_idle_age,
-                    map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone()),
-                )
+                let resolve = map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone());
+                discover::Layer::new(BUFFER_CAPACITY, cache_max_idle_age, resolve)
             };
 
             // If the balancer fails to be created, i.e., because it is unresolvable,
             // fall back to using a router that dispatches request to the
             // application-selected original destination.
-            let balancer_cache = balancer_endpoint_stack
-                .clone()
+            let http_balancer_cache = http_balancer_endpoint
                 .push_spawn_ready()
                 .push(discover)
                 .push_per_make(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .serves::<Concrete>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
-                .spawn_cache(router_capacity, router_max_idle_age)
+                .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
                 ))
                 .serves::<Concrete>();
 
-            let profile_route_proxy = svc::stack(())
+            let http_profile_route_proxy = svc::stack(())
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route_retry.clone(),
                 ))
@@ -213,22 +218,18 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .push(classify::layer());
 
-            let logical_profile_cache = balancer_cache
+            let http_profile_cache = http_balancer_cache
                 .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
-                    profile_route_proxy.into_inner(),
+                    http_profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
                 .push_per_make(svc::map_target::layer(Concrete::from))
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
-                .spawn_cache(router_capacity, router_max_idle_age)
-                .push_per_make(trace::layer(|_: &Logical| info_span!("profile.logical")))
+                .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
-                .serves::<Profile>()
-                .push(router::Layer::new(|()| ProfileTarget))
-                .routes::<(), Logical>()
-                .make(());
+                .serves::<Profile>();
 
             // Caches DNS refinements from relative names to canonical names.
             //
@@ -236,7 +237,7 @@ impl<A: OrigDstAddr> Config<A> {
             // the canonical form of these names is `foo.ns.svc.cluster.local
             let dns_refine_cache = svc::stack(dns_resolver.into_make_refine())
                 .push_per_make(svc::lock::Layer::new())
-                .spawn_cache(router_capacity, router_max_idle_age)
+                .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(
                     |name: &dns::Name| info_span!("canonicalize", %name),
                 ))
@@ -247,46 +248,53 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves_rsp::<dns::Name, dns::Name>()
                 .into_inner();
 
-            let http_logical = svc::stack(logical_profile_cache)
-                .serves::<Logical>()
-                .push(http::normalize_uri::layer())
-                .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
-                .push(http::canonicalize::Layer::new(
-                    dns_refine_cache,
-                    canonicalize_timeout,
-                ))
-                .serves::<Logical>()
-                .push_per_make(
-                    svc::layers()
-                        .push(http::strip_header::request::layer(L5D_CLIENT_ID))
-                        .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
-                )
-                .push(trace::layer(
-                    |logical: &Logical| info_span!("logical", addr = %logical.dst),
-                ))
-                .serves::<Logical>();
+            let http_logical_router = {
+                let profile_router = http_profile_cache
+                    .push(router::Layer::new(|()| ProfileTarget))
+                    .routes::<(), Logical>()
+                    .make(());
 
+                svc::stack(profile_router)
+                    .serves::<Logical>()
+                    .push(http::normalize_uri::layer())
+                    .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
+                    .push(http::canonicalize::Layer::new(
+                        dns_refine_cache,
+                        canonicalize_timeout,
+                    ))
+                    .push_per_make(
+                        svc::layers()
+                            .push(http::strip_header::request::layer(L5D_CLIENT_ID))
+                            .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                    )
+                    .push(trace::layer(
+                        |logical: &Logical| info_span!("logical", addr = %logical.dst),
+                    ))
+                    .serves::<Logical>()
+            };
+
+            // Caches clients that bypass discovery/balancing.
+            //
             // This is effectively the same as the endpoint stack; but the
             // client layer captures the requst body type (via PhantomData), so
-            // the stack cannot be shared directly between the balance and
-            // fallback stacks.
-            let http_forward_cache = connect_stack
-                .clone()
+            // the stack cannot be shared directly.
+            let http_forward_cache = tcp_connect
+                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(http::client::layer(connect.h2_settings))
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
                 .push(http::normalize_uri::layer())
-                .push(endpoint_observability.clone())
-                .push(endpoint_identity_headers.clone())
+                .push(http_endpoint_observability.clone())
+                .push(http_endpoint_identity_headers.clone())
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
-                .spawn_cache(router_capacity, router_max_idle_age)
-                .push(trace::layer(|endpoint: &Endpoint| {
+                .spawn_cache(cache_capacity, cache_max_idle_age)
+                .push(trace::layer(|endpoint: &HttpEndpoint| {
                     info_span!("bypass", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<Endpoint>();
+                .serves::<HttpEndpoint>();
 
             let http_admit_request = svc::layers()
                 .push_oneshot()
@@ -298,18 +306,18 @@ impl<A: OrigDstAddr> Config<A> {
                 })))
                 .push(metrics.http_handle_time.layer());
 
-            let http_server = svc::stack(http_logical)
+            let http_server = http_logical_router
                 .push_make_ready()
-                .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
+                .push(svc::map_target::layer(|(l, _): (Logical, HttpEndpoint)| l))
                 .push_per_make(svc::layers().boxed())
                 .push(fallback::layer(
                     http_forward_cache
                         .push_make_ready()
-                        .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
+                        .push(svc::map_target::layer(|(_, e): (Logical, HttpEndpoint)| e))
                         .push_per_make(svc::layers().boxed())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
-                .serves::<(Logical, Endpoint)>()
+                .serves::<(Logical, HttpEndpoint)>()
                 .push_make_ready()
                 .push_timeout(service_acquisition_timeout)
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
@@ -320,12 +328,6 @@ impl<A: OrigDstAddr> Config<A> {
                     },
                 ))
                 .makes::<tls::accept::Meta>();
-
-            let tcp_forward = svc::stack(connect_stack)
-                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                    Endpoint::from(meta.addrs.target_addr())
-                }))
-                .push(svc::layer::mk(tcp::Forward::new));
 
             let tcp_server = Server::new(
                 TransportLabels,
@@ -353,10 +355,18 @@ impl<A: OrigDstAddr> Config<A> {
 #[derive(Copy, Clone, Debug)]
 struct TransportLabels;
 
-impl transport::metrics::TransportLabels<Endpoint> for TransportLabels {
+impl transport::metrics::TransportLabels<HttpEndpoint> for TransportLabels {
     type Labels = transport::labels::Key;
 
-    fn transport_labels(&self, endpoint: &Endpoint) -> Self::Labels {
+    fn transport_labels(&self, endpoint: &HttpEndpoint) -> Self::Labels {
+        transport::labels::Key::connect("outbound", endpoint.identity.as_ref())
+    }
+}
+
+impl transport::metrics::TransportLabels<TcpEndpoint> for TransportLabels {
+    type Labels = transport::labels::Key;
+
+    fn transport_labels(&self, endpoint: &TcpEndpoint) -> Self::Labels {
         transport::labels::Key::connect("outbound", endpoint.identity.as_ref())
     }
 }

@@ -129,7 +129,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                 // happening today. Really, we should daemonize the whole client
                 // into a task so consumers can be ignorant. This woudld also
                 // probably enable the use of a lock.
-                let svc = svc::stack(connect::svc(dst.control.connect.keepalive))
+                let svc = svc::stack(connect::Connect::new(dst.control.connect.keepalive))
                     .push(tls::client::layer(identity.local()))
                     .push_timeout(dst.control.connect.timeout)
                     .push(control::client::layer())
@@ -141,10 +141,10 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push(http::metrics::layer::<_, classify::Response>(metrics))
                     .push(control::add_origin::layer())
                     .push_pending()
-                    // TODO .push_per_make(svc::lock::Layer::new())
                     .push_per_make(
                         svc::layers()
                             .push(grpc::req_body_as_payload::layer())
+                            // TODO .push(svc::lock::Layer::new())
                             .push_buffer(dst.control.buffer_capacity),
                     )
                     .makes::<ControlAddr>()

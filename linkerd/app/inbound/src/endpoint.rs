@@ -27,9 +27,14 @@ pub struct Target {
 pub struct Profile(Addr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Endpoint {
+pub struct HttpEndpoint {
     pub port: u16,
     pub settings: http::Settings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TcpEndpoint {
+    pub port: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -40,21 +45,21 @@ pub struct RequestTarget {
 #[derive(Copy, Clone, Debug)]
 pub struct ProfileTarget;
 
-// === impl Endpoint ===
+// === impl HttpEndpoint ===
 
-impl connect::HasPeerAddr for Endpoint {
-    fn peer_addr(&self) -> SocketAddr {
+impl connect::ConnectAddr for HttpEndpoint {
+    fn connect_addr(&self) -> SocketAddr {
         ([127, 0, 0, 1], self.port).into()
     }
 }
 
-impl http::settings::HasSettings for Endpoint {
+impl http::settings::HasSettings for HttpEndpoint {
     fn http_settings(&self) -> &http::Settings {
         &self.settings
     }
 }
 
-impl From<Target> for Endpoint {
+impl From<Target> for HttpEndpoint {
     fn from(target: Target) -> Self {
         Self {
             port: target.addr.port(),
@@ -63,16 +68,27 @@ impl From<Target> for Endpoint {
     }
 }
 
-impl From<SocketAddr> for Endpoint {
-    fn from(addr: SocketAddr) -> Self {
-        Self {
-            port: addr.port(),
-            settings: http::Settings::NotHttp,
-        }
+impl tls::HasPeerIdentity for HttpEndpoint {
+    fn peer_identity(&self) -> tls::PeerIdentity {
+        Conditional::None(tls::ReasonForNoPeerName::Loopback.into())
     }
 }
 
-impl tls::HasPeerIdentity for Endpoint {
+// === TcpEndpoint ===
+
+impl From<SocketAddr> for TcpEndpoint {
+    fn from(addr: SocketAddr) -> Self {
+        Self { port: addr.port() }
+    }
+}
+
+impl connect::ConnectAddr for TcpEndpoint {
+    fn connect_addr(&self) -> SocketAddr {
+        ([127, 0, 0, 1], self.port).into()
+    }
+}
+
+impl tls::HasPeerIdentity for TcpEndpoint {
     fn peer_identity(&self) -> tls::PeerIdentity {
         Conditional::None(tls::ReasonForNoPeerName::Loopback.into())
     }

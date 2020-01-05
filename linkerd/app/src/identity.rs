@@ -42,7 +42,7 @@ impl Config {
                 let (local, crt_store) = Local::new(&certify);
 
                 let addr = control.addr;
-                let svc = svc::stack(connect::svc(control.connect.keepalive))
+                let svc = svc::stack(connect::Connect::new(control.connect.keepalive))
                     .push(tls::client::layer(tls::Conditional::Some(
                         certify.trust_anchors.clone(),
                     )))

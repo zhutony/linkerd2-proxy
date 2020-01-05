@@ -1,4 +1,4 @@
-use super::Endpoint;
+use super::HttpEndpoint;
 use futures::{
     future::{self, Either, FutureResult},
     try_ready, Async, Future, Poll,
@@ -10,7 +10,6 @@ use linkerd2_app_core::{
     transport::tls::{self, HasPeerIdentity},
     Conditional, Error, L5D_REQUIRE_ID,
 };
-use std::marker::PhantomData;
 use tracing::debug;
 
 #[derive(Clone, Debug)]
@@ -48,13 +47,13 @@ impl<M> svc::Layer<M> for Layer {
 
 // ===== impl MakeSvc =====
 
-impl<M> svc::Make<Endpoint> for MakeSvc<M>
+impl<M> svc::Make<HttpEndpoint> for MakeSvc<M>
 where
-    M: svc::Make<Endpoint>,
+    M: svc::Make<HttpEndpoint>,
 {
     type Service = RequireIdentity<M::Service>;
 
-    fn make(&self, target: Endpoint) -> Self::Service {
+    fn make(&self, target: HttpEndpoint) -> Self::Service {
         let peer_identity = target.peer_identity().clone();
         let inner = self.inner.make(target);
         RequireIdentity {
@@ -64,9 +63,9 @@ where
     }
 }
 
-impl<M> svc::Service<Endpoint> for MakeSvc<M>
+impl<M> svc::Service<HttpEndpoint> for MakeSvc<M>
 where
-    M: svc::Service<Endpoint>,
+    M: svc::Service<HttpEndpoint>,
 {
     type Response = RequireIdentity<M::Response>;
     type Error = M::Error;
@@ -76,7 +75,7 @@ where
         self.inner.poll_ready()
     }
 
-    fn call(&mut self, target: Endpoint) -> Self::Future {
+    fn call(&mut self, target: HttpEndpoint) -> Self::Future {
         // After the inner service is made, we want to wrap that service
         // with a filter that compares the target's `peer_identity` and
         // `l5d_require_id` header if present

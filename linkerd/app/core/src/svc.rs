@@ -165,11 +165,10 @@ impl<S> Stack<S> {
         self.push(per_make::layer(layer))
     }
 
-    pub fn push_map_response<T, R>(self, map_response: R) -> Stack<map_response::MapResponse<S, R>>
-    where
-        S: tower::Service<T>,
-        R: map_response::ResponseMap<S::Response> + Clone,
-    {
+    pub fn push_map_response<R: Clone>(
+        self,
+        map_response: R,
+    ) -> Stack<map_response::MapResponse<S, R>> {
         self.push(map_response::Layer::new(map_response))
     }
 

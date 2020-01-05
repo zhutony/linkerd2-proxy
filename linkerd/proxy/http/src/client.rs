@@ -8,7 +8,6 @@ use futures::{try_ready, Async, Future, Poll};
 use http;
 use hyper;
 use linkerd2_error::Error;
-use linkerd2_proxy_transport::connect;
 use std::fmt;
 use std::marker::PhantomData;
 use tower::ServiceExt;
@@ -36,7 +35,6 @@ pub struct MakeClient<C, T, B> {
 /// A `Future` returned from `Client::new_service()`.
 pub enum MakeFuture<C, T, B>
 where
-    T: connect::HasPeerAddr,
     B: hyper::body::Payload + 'static,
     C: tower::MakeConnection<T> + 'static,
     C::Connection: Send + 'static,
@@ -113,7 +111,7 @@ where
     C::Future: Send + 'static,
     <C::Future as Future>::Error: Into<Error>,
     C::Connection: Send + 'static,
-    T: connect::HasPeerAddr + HasSettings + fmt::Debug + Clone + Send + Sync,
+    T: HasSettings + fmt::Debug + Clone + Send + Sync,
     B: hyper::body::Payload + 'static,
 {
     type Response = Client<C, T, B>;
@@ -126,7 +124,6 @@ where
 
     fn call(&mut self, config: T) -> Self::Future {
         debug!("building client={:?}", config);
-        let peer_addr = config.peer_addr();
 
         let connect = self.connect.clone();
         match *config.http_settings() {
@@ -135,8 +132,8 @@ where
                 wants_h1_upgrade: _,
                 was_absolute_form,
             } => {
-                let exec = tokio::executor::DefaultExecutor::current()
-                    .instrument(info_span!("http1", %peer_addr));
+                let exec =
+                    tokio::executor::DefaultExecutor::current().instrument(info_span!("http1"));
                 let h1 = hyper::Client::builder()
                     .executor(exec)
                     .keep_alive(keep_alive)
@@ -149,9 +146,6 @@ where
             Settings::Http2 => {
                 let h2 = h2::Connect::new(connect, self.h2_settings.clone()).oneshot(config);
                 MakeFuture::Http2(h2)
-            }
-            Settings::NotHttp => {
-                unreachable!("client config has invalid HTTP settings: {:?}", config);
             }
         }
     }
@@ -171,7 +165,6 @@ impl<C: Clone, T, B> Clone for MakeClient<C, T, B> {
 
 impl<C, T, B> Future for MakeFuture<C, T, B>
 where
-    T: connect::HasPeerAddr,
     C: tower::MakeConnection<T> + Send + Sync + 'static,
     C::Connection: Send + 'static,
     C::Future: Send + 'static,

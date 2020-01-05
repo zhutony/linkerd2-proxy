@@ -11,7 +11,7 @@ use linkerd2_app_core::{
     },
     router,
     transport::{connect, tls},
-    Addr, Conditional, NameAddr, L5D_REQUIRE_ID,
+    Addr, Conditional, L5D_REQUIRE_ID,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,14 +41,22 @@ pub struct Concrete {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Endpoint {
+pub struct HttpEndpoint {
     pub addr: SocketAddr,
     pub identity: tls::PeerIdentity,
     pub concrete: Concrete,
     pub metadata: Metadata,
 }
 
-impl Endpoint {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TcpEndpoint {
+    pub addr: SocketAddr,
+    pub identity: tls::PeerIdentity,
+}
+
+// === impl HttpEndpoint ===
+
+impl HttpEndpoint {
     pub fn can_use_orig_proto(&self) -> bool {
         if let ProtocolHint::Unknown = self.metadata.protocol_hint() {
             return false;
@@ -61,37 +69,17 @@ impl Endpoint {
                 wants_h1_upgrade,
                 was_absolute_form: _,
             } => !wants_h1_upgrade,
-            http::Settings::NotHttp => {
-                unreachable!(
-                    "Endpoint::can_use_orig_proto called when NotHttp: {:?}",
-                    self,
-                );
-            }
         }
     }
 }
 
-impl From<SocketAddr> for Endpoint {
-    fn from(addr: SocketAddr) -> Self {
-        Self {
-            addr,
-            metadata: Metadata::empty(),
-            identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
-            concrete: Concrete {
-                dst: addr.into(),
-                settings: http::Settings::NotHttp,
-            },
-        }
-    }
-}
-
-impl std::fmt::Display for Endpoint {
+impl std::fmt::Display for HttpEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.addr.fmt(f)
     }
 }
 
-impl std::hash::Hash for Endpoint {
+impl std::hash::Hash for HttpEndpoint {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.addr.hash(state);
         self.identity.hash(state);
@@ -100,25 +88,25 @@ impl std::hash::Hash for Endpoint {
     }
 }
 
-impl tls::HasPeerIdentity for Endpoint {
+impl tls::HasPeerIdentity for HttpEndpoint {
     fn peer_identity(&self) -> tls::PeerIdentity {
         self.identity.clone()
     }
 }
 
-impl connect::HasPeerAddr for Endpoint {
-    fn peer_addr(&self) -> SocketAddr {
+impl connect::ConnectAddr for HttpEndpoint {
+    fn connect_addr(&self) -> SocketAddr {
         self.addr
     }
 }
 
-impl http::settings::HasSettings for Endpoint {
+impl http::settings::HasSettings for HttpEndpoint {
     fn http_settings(&self) -> &http::Settings {
         &self.concrete.settings
     }
 }
 
-impl http::normalize_uri::ShouldNormalizeUri for Endpoint {
+impl http::normalize_uri::ShouldNormalizeUri for HttpEndpoint {
     fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
         if let http::Settings::Http1 {
             was_absolute_form: false,
@@ -131,7 +119,7 @@ impl http::normalize_uri::ShouldNormalizeUri for Endpoint {
     }
 }
 
-impl tap::Inspect for Endpoint {
+impl tap::Inspect for HttpEndpoint {
     fn src_addr<B>(&self, req: &http::Request<B>) -> Option<SocketAddr> {
         req.extensions()
             .get::<tls::accept::Meta>()
@@ -172,9 +160,14 @@ impl tap::Inspect for Endpoint {
 }
 
 impl MapEndpoint<Concrete, Metadata> for FromMetadata {
-    type Out = Endpoint;
+    type Out = HttpEndpoint;
 
-    fn map_endpoint(&self, concrete: &Concrete, addr: SocketAddr, metadata: Metadata) -> Endpoint {
+    fn map_endpoint(
+        &self,
+        concrete: &Concrete,
+        addr: SocketAddr,
+        metadata: Metadata,
+    ) -> HttpEndpoint {
         tracing::trace!(%concrete, %addr, ?metadata, "endpoint");
         let identity = metadata
             .identity()
@@ -183,7 +176,7 @@ impl MapEndpoint<Concrete, Metadata> for FromMetadata {
             .unwrap_or_else(|| {
                 Conditional::None(tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into())
             });
-        Endpoint {
+        HttpEndpoint {
             addr,
             identity,
             metadata,
@@ -192,7 +185,7 @@ impl MapEndpoint<Concrete, Metadata> for FromMetadata {
     }
 }
 
-impl Into<EndpointLabels> for Endpoint {
+impl Into<EndpointLabels> for HttpEndpoint {
     fn into(self) -> EndpointLabels {
         use linkerd2_app_core::metric_labels::{Direction, TlsId};
         EndpointLabels {
@@ -203,6 +196,43 @@ impl Into<EndpointLabels> for Endpoint {
         }
     }
 }
+
+// === impl TcpEndpoint ===
+
+impl From<SocketAddr> for TcpEndpoint {
+    fn from(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            identity: Conditional::None(tls::ReasonForNoPeerName::NotHttp.into()),
+        }
+    }
+}
+
+impl connect::ConnectAddr for TcpEndpoint {
+    fn connect_addr(&self) -> SocketAddr {
+        self.addr
+    }
+}
+
+impl tls::HasPeerIdentity for TcpEndpoint {
+    fn peer_identity(&self) -> tls::PeerIdentity {
+        self.identity.clone()
+    }
+}
+
+impl Into<EndpointLabels> for TcpEndpoint {
+    fn into(self) -> EndpointLabels {
+        use linkerd2_app_core::metric_labels::{Direction, TlsId};
+        EndpointLabels {
+            direction: Direction::Out,
+            tls_id: self.identity.as_ref().map(|id| TlsId::ServerId(id.clone())),
+            dst_concrete: None,
+            labels: None,
+        }
+    }
+}
+
+// === impl Concrete ===
 
 impl std::fmt::Display for Concrete {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -219,7 +249,7 @@ impl From<tls::accept::Meta> for LogicalOrFallbackTarget {
 }
 
 impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
-    type Key = (Logical, Endpoint);
+    type Key = (Logical, HttpEndpoint);
 
     fn key(&self, req: &http::Request<B>) -> Self::Key {
         use linkerd2_app_core::{
@@ -256,7 +286,7 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
             settings,
         };
 
-        let fallback = Endpoint {
+        let fallback = HttpEndpoint {
             addr: self.0.addrs.target_addr(),
             metadata: Metadata::empty(),
             concrete: logical.clone().into(),

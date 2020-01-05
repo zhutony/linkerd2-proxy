@@ -3,20 +3,21 @@
 //! The inbound proxy is responsible for terminating traffic from other network
 //! endpoints inbound to the local application.
 
-//#![deny(warnings, rust_2018_idioms)]
-#![allow(warnings, rust_2018_idioms)]
+#![deny(warnings, rust_2018_idioms)]
 
-pub use self::endpoint::{Endpoint, Profile, ProfileTarget, RequestTarget, Target};
+pub use self::endpoint::{
+    HttpEndpoint, Profile, ProfileTarget, RequestTarget, Target, TcpEndpoint,
+};
 use futures::future;
 use linkerd2_app_core::{
-    self as core, cache, classify,
+    classify,
     config::{ProxyConfig, ServerConfig},
     drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self,
         http::{
-            client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
+            self, client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
             strip_header,
         },
         identity,
@@ -28,14 +29,11 @@ use linkerd2_app_core::{
     svc::{self, Make},
     trace, trace_context,
     transport::{self, connect, io::BoxedIo, tls, OrigDstAddr, SysOrigDstAddr},
-    Addr, DispatchDeadline, Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP,
-    L5D_SERVER_ID,
+    Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_SERVER_ID,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Duration;
 use tokio::sync::mpsc;
-use tower_grpc::{self as grpc, generic::client::GrpcService};
 use tracing::{info, info_span};
 
 mod endpoint;
@@ -81,8 +79,8 @@ impl<A: OrigDstAddr> Config<A> {
                 ProxyConfig {
                     server: ServerConfig { bind, h2_settings },
                     connect,
-                    router_capacity,
-                    router_max_idle_age,
+                    cache_capacity,
+                    cache_max_idle_age,
                     disable_protocol_detection_for_ports,
                     service_acquisition_timeout,
                     max_in_flight_requests,
@@ -98,35 +96,49 @@ impl<A: OrigDstAddr> Config<A> {
         let serve = Box::new(future::lazy(move || {
             // Establishes connections to the local application (for both
             // TCP forwarding and HTTP proxying).
-            let tcp_connect = svc::stack(connect::svc(connect.keepalive))
+            let tcp_connect = svc::stack(connect::Connect::new(connect.keepalive))
                 .push_map_response(BoxedIo::new) // Ensures the transport propagates shutdown properly.
-                .push_timeout(connect.timeout)
-                .push(metrics.transport.layer_connect(TransportLabels));
+                .push_timeout(connect.timeout);
+
+            // Forwards TCP streams that cannot be decoded as HTTP.
+            let tcp_forward = tcp_connect
+                .clone()
+                .push(metrics.transport.layer_connect(TransportLabels))
+                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                    TcpEndpoint::from(meta.addrs.target_addr())
+                }))
+                .push(svc::layer::mk(tcp::Forward::new));
 
             let http_endpoint_cache = tcp_connect
-                .clone()
+                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(client::layer(connect.h2_settings))
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .push_per_make(trace_context::layer(
-                    span_sink
-                        .clone()
-                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
-                ))
-                .serves::<Endpoint>()
+                .serves::<HttpEndpoint>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
-                .makes::<Endpoint>()
-                .spawn_cache(router_capacity, router_max_idle_age)
-                .push(trace::layer(|ep: &Endpoint| {
+                .makes::<HttpEndpoint>()
+                .spawn_cache(cache_capacity, cache_max_idle_age)
+                .push(trace::layer(|ep: &HttpEndpoint| {
                     info_span!(
                         "endpoint",
                         port = %ep.port,
                         http = ?ep.settings,
                     )
                 }));
+
+            let http_target_observability = svc::layers()
+                .push(tap_layer)
+                .push(http_metrics::layer::<_, classify::Response>(
+                    metrics.http_endpoint,
+                ))
+                .push_per_make(trace_context::layer(
+                    span_sink
+                        .clone()
+                        .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
+                ));
 
             let http_profile_route_proxy = svc::stack(())
                 .push(insert::target::layer())
@@ -139,12 +151,9 @@ impl<A: OrigDstAddr> Config<A> {
             // Determine the target for each request, obtain a profile route for
             // that target, and dispatch the request to it.
             let http_profile_cache = http_endpoint_cache
-                .serves::<Endpoint>()
-                .push(svc::map_target::layer(Endpoint::from))
-                .push(tap_layer)
-                .push(http_metrics::layer::<_, classify::Response>(
-                    metrics.http_endpoint,
-                ))
+                .serves::<HttpEndpoint>()
+                .push(svc::map_target::layer(HttpEndpoint::from))
+                .push(http_target_observability)
                 .serves::<Target>()
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
@@ -153,7 +162,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .makes_clone::<Profile>()
-                .spawn_cache(router_capacity, router_max_idle_age)
+                .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
                 .serves::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
@@ -161,13 +170,18 @@ impl<A: OrigDstAddr> Config<A> {
 
             let http_admit_request = svc::layers()
                 .push(svc::layer::mk(orig_proto::Downgrade::new))
-                .push(strip_header::request::layer(L5D_REMOTE_IP))
-                .push(strip_header::request::layer(L5D_CLIENT_ID))
-                .push(strip_header::response::layer(L5D_SERVER_ID))
                 .push_oneshot()
                 .push_concurrency_limit(max_in_flight_requests)
                 .push_load_shed()
-                .push(errors::layer())
+                // Synthesizes responses for proxy errors.
+                .push(errors::layer());
+
+            let http_strip_headers = svc::layers()
+                .push(strip_header::request::layer(L5D_REMOTE_IP))
+                .push(strip_header::request::layer(L5D_CLIENT_ID))
+                .push(strip_header::response::layer(L5D_SERVER_ID));
+
+            let http_server_observability = svc::layers()
                 .push(trace_context::layer(span_sink.map(|span_sink| {
                     SpanConverter::server(span_sink, trace_labels())
                 })))
@@ -177,19 +191,50 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<Target>()
                 .push_make_ready()
                 .push(normalize_uri::layer())
-                .push_timeout(service_acquisition_timeout)
-                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
-                .push(trace::layer(|t: &Target| {
-                    info_span!(
-                        "target",
-                        name = ?t.dst_name,
-                        http = ?t.http_settings,
-                    )
+                .push_per_make(
+                    svc::layers()
+                        .push_ready_timeout(service_acquisition_timeout)
+                        .push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                )
+                .push(trace::layer(|t: &Target| match t.http_settings {
+                    http::Settings::Http2 => match t.dst_name.as_ref() {
+                        None => info_span!(
+                            "http2",
+                            target.port = %t.addr.port(),
+                        ),
+                        Some(name) => info_span!(
+                            "http2",
+                            %name,
+                            target.port = %t.addr.port(),
+                        ),
+                    },
+                    http::Settings::Http1 {
+                        keep_alive,
+                        wants_h1_upgrade,
+                        was_absolute_form,
+                    } => match t.dst_name.as_ref() {
+                        None => info_span!(
+                            "http1",
+                            port = %t.addr.port(),
+                            keep_alive,
+                            wants_h1_upgrade,
+                            was_absolute_form,
+                        ),
+                        Some(name) => info_span!(
+                            "http1",
+                            %name,
+                            port = %t.addr.port(),
+                            keep_alive,
+                            wants_h1_upgrade,
+                            was_absolute_form,
+                        ),
+                    },
                 }))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
-                .push(trace::layer(|src: &tls::accept::Meta| info_span!("router")))
+                .push_per_make(http_strip_headers)
                 .push_per_make(http_admit_request)
+                .push_per_make(http_server_observability)
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",
@@ -197,12 +242,6 @@ impl<A: OrigDstAddr> Config<A> {
                         target.addr = %src.addrs.target_addr(),
                     )
                 }));
-
-            let tcp_forward = svc::stack(tcp_connect)
-                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                    Endpoint::from(meta.addrs.target_addr())
-                }))
-                .push(svc::layer::mk(tcp::Forward::new));
 
             let tcp_server = Server::new(
                 TransportLabels,
@@ -229,10 +268,21 @@ impl<A: OrigDstAddr> Config<A> {
 #[derive(Copy, Clone, Debug)]
 struct TransportLabels;
 
-impl transport::metrics::TransportLabels<Endpoint> for TransportLabels {
+impl transport::metrics::TransportLabels<HttpEndpoint> for TransportLabels {
     type Labels = transport::labels::Key;
 
-    fn transport_labels(&self, _: &Endpoint) -> Self::Labels {
+    fn transport_labels(&self, _: &HttpEndpoint) -> Self::Labels {
+        transport::labels::Key::connect::<()>(
+            "inbound",
+            tls::Conditional::None(tls::ReasonForNoPeerName::Loopback.into()),
+        )
+    }
+}
+
+impl transport::metrics::TransportLabels<TcpEndpoint> for TransportLabels {
+    type Labels = transport::labels::Key;
+
+    fn transport_labels(&self, _: &TcpEndpoint) -> Self::Labels {
         transport::labels::Key::connect::<()>(
             "inbound",
             tls::Conditional::None(tls::ReasonForNoPeerName::Loopback.into()),

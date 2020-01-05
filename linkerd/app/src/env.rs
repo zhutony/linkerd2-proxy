@@ -255,12 +255,12 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
         parse_port_set,
     );
 
-    let inbound_router_capacity = parse(strings, ENV_INBOUND_ROUTER_CAPACITY, parse_number);
-    let outbound_router_capacity = parse(strings, ENV_OUTBOUND_ROUTER_CAPACITY, parse_number);
+    let inbound_cache_capacity = parse(strings, ENV_INBOUND_ROUTER_CAPACITY, parse_number);
+    let outbound_cache_capacity = parse(strings, ENV_OUTBOUND_ROUTER_CAPACITY, parse_number);
 
-    let inbound_router_max_idle_age =
+    let inbound_cache_max_idle_age =
         parse(strings, ENV_INBOUND_ROUTER_MAX_IDLE_AGE, parse_duration);
-    let outbound_router_max_idle_age =
+    let outbound_cache_max_idle_age =
         parse(strings, ENV_OUTBOUND_ROUTER_MAX_IDLE_AGE, parse_duration);
 
     let inbound_max_in_flight = parse(strings, ENV_INBOUND_MAX_IN_FLIGHT, parse_number);
@@ -352,9 +352,9 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
                 disable_protocol_detection_for_ports: outbound_disable_ports?
                     .unwrap_or_else(|| default_disable_ports_protocol_detection())
                     .into(),
-                router_max_idle_age: outbound_router_max_idle_age?
+                cache_max_idle_age: outbound_cache_max_idle_age?
                     .unwrap_or(DEFAULT_OUTBOUND_ROUTER_MAX_IDLE_AGE),
-                router_capacity: outbound_router_capacity?
+                cache_capacity: outbound_cache_capacity?
                     .unwrap_or(DEFAULT_OUTBOUND_ROUTER_CAPACITY),
                 service_acquisition_timeout: outbound_service_acquisition_timeout?
                     .unwrap_or(DEFAULT_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT),
@@ -391,10 +391,9 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
                 disable_protocol_detection_for_ports: inbound_disable_ports?
                     .unwrap_or_else(|| default_disable_ports_protocol_detection())
                     .into(),
-                router_max_idle_age: inbound_router_max_idle_age?
+                cache_max_idle_age: inbound_cache_max_idle_age?
                     .unwrap_or(DEFAULT_INBOUND_ROUTER_MAX_IDLE_AGE),
-                router_capacity: inbound_router_capacity?
-                    .unwrap_or(DEFAULT_INBOUND_ROUTER_CAPACITY),
+                cache_capacity: inbound_cache_capacity?.unwrap_or(DEFAULT_INBOUND_ROUTER_CAPACITY),
                 service_acquisition_timeout: inbound_service_acquisition_timeout?
                     .unwrap_or(DEFAULT_INBOUND_SERVICE_ACQUISITION_TIMEOUT),
                 max_in_flight_requests: inbound_max_in_flight?
