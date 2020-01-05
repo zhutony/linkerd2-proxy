@@ -157,6 +157,10 @@ impl<S> Stack<S> {
         }))
     }
 
+    pub fn push_oneshot(self) -> Stack<oneshot::Oneshot<S>> {
+        self.push(oneshot::Layer::new())
+    }
+
     pub fn push_per_make<L: Clone>(self, layer: L) -> Stack<per_make::PerMake<L, S>> {
         self.push(per_make::layer(layer))
     }

@@ -145,7 +145,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push_per_make(
                         svc::layers()
                             .push(grpc::req_body_as_payload::layer())
-                            .push_buffer(dst.control.buffer.max_in_flight),
+                            .push_buffer(dst.control.buffer_capacity),
                     )
                     .makes::<ControlAddr>()
                     .into_inner()

@@ -79,16 +79,13 @@ impl<A: OrigDstAddr> Config<A> {
         let Config {
             proxy:
                 ProxyConfig {
-                    server:
-                        ServerConfig {
-                            bind,
-                            buffer,
-                            h2_settings,
-                        },
+                    server: ServerConfig { bind, h2_settings },
                     connect,
                     router_capacity,
                     router_max_idle_age,
                     disable_protocol_detection_for_ports,
+                    service_acquisition_timeout,
+                    max_in_flight_requests,
                 },
         } = self;
 
@@ -101,12 +98,12 @@ impl<A: OrigDstAddr> Config<A> {
         let serve = Box::new(future::lazy(move || {
             // Establishes connections to the local application (for both
             // TCP forwarding and HTTP proxying).
-            let connect_stack = svc::stack(connect::svc(connect.keepalive))
+            let tcp_connect = svc::stack(connect::svc(connect.keepalive))
                 .push_map_response(BoxedIo::new) // Ensures the transport propagates shutdown properly.
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
 
-            let endpoint_cache = connect_stack
+            let http_endpoint_cache = tcp_connect
                 .clone()
                 .push(client::layer(connect.h2_settings))
                 .push(reconnect::layer({
@@ -131,7 +128,7 @@ impl<A: OrigDstAddr> Config<A> {
                     )
                 }));
 
-            let profile_route_proxy = svc::stack(())
+            let http_profile_route_proxy = svc::stack(())
                 .push(insert::target::layer())
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_route,
@@ -141,7 +138,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Determine the target for each request, obtain a profile route for
             // that target, and dispatch the request to it.
-            let profile_cache = svc::stack(endpoint_cache)
+            let http_profile_cache = http_endpoint_cache
                 .serves::<Endpoint>()
                 .push(svc::map_target::layer(Endpoint::from))
                 .push(tap_layer)
@@ -151,7 +148,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<Target>()
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
-                    profile_route_proxy.into_inner(),
+                    http_profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
@@ -162,13 +159,13 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(|()| ProfileTarget))
                 .make(());
 
-            let admit_request = svc::layers()
+            let http_admit_request = svc::layers()
                 .push(svc::layer::mk(orig_proto::Downgrade::new))
                 .push(strip_header::request::layer(L5D_REMOTE_IP))
                 .push(strip_header::request::layer(L5D_CLIENT_ID))
                 .push(strip_header::response::layer(L5D_SERVER_ID))
                 .push_oneshot()
-                .push_concurrency_limit(buffer.max_in_flight)
+                .push_concurrency_limit(max_in_flight_requests)
                 .push_load_shed()
                 .push(errors::layer())
                 .push(trace_context::layer(span_sink.map(|span_sink| {
@@ -176,11 +173,11 @@ impl<A: OrigDstAddr> Config<A> {
                 })))
                 .push(metrics.http_handle_time.layer());
 
-            let source_stack = svc::stack(profile_cache)
+            let http_server = svc::stack(http_profile_cache)
                 .serves::<Target>()
                 .push_make_ready()
                 .push(normalize_uri::layer())
-                .push_timeout(buffer.dispatch_timeout)
+                .push_timeout(service_acquisition_timeout)
                 .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(|t: &Target| {
                     info_span!(
@@ -192,7 +189,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
                 .push(trace::layer(|src: &tls::accept::Meta| info_span!("router")))
-                .push_per_make(admit_request)
+                .push_per_make(http_admit_request)
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",
@@ -201,23 +198,24 @@ impl<A: OrigDstAddr> Config<A> {
                     )
                 }));
 
-            let forward_tcp = svc::stack(connect_stack)
+            let tcp_forward = svc::stack(tcp_connect)
                 .push(svc::map_target::layer(|meta: tls::accept::Meta| {
                     Endpoint::from(meta.addrs.target_addr())
                 }))
                 .push(svc::layer::mk(tcp::Forward::new));
 
-            let server = Server::new(
+            let tcp_server = Server::new(
                 TransportLabels,
                 metrics.transport,
-                forward_tcp.into_inner(),
-                source_stack.into_inner(),
+                tcp_forward.into_inner(),
+                http_server.into_inner(),
                 h2_settings,
                 drain.clone(),
                 disable_protocol_detection_for_ports.clone(),
             );
 
-            let accept = tls::AcceptTls::new(local_identity, server)
+            // Terminate inbound mTLS from other outbound proxies.
+            let accept = tls::AcceptTls::new(local_identity, tcp_server)
                 .with_skip_ports(disable_protocol_detection_for_ports);
 
             info!(listen.addr = %listen.listen_addr(), "serving");

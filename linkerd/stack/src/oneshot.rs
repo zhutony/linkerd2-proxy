@@ -3,6 +3,7 @@ use futures::Poll;
 #[derive(Copy, Clone, Debug)]
 pub struct Layer(());
 
+#[derive(Clone, Debug)]
 pub struct Oneshot<S>(S);
 
 // === impl Layer ===

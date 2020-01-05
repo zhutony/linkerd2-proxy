@@ -53,8 +53,10 @@ pub const ENV_INBOUND_LISTEN_ADDR: &str = "LINKERD2_PROXY_INBOUND_LISTEN_ADDR";
 pub const ENV_CONTROL_LISTEN_ADDR: &str = "LINKERD2_PROXY_CONTROL_LISTEN_ADDR";
 pub const ENV_ADMIN_LISTEN_ADDR: &str = "LINKERD2_PROXY_ADMIN_LISTEN_ADDR";
 pub const ENV_METRICS_RETAIN_IDLE: &str = "LINKERD2_PROXY_METRICS_RETAIN_IDLE";
-const ENV_INBOUND_DISPATCH_TIMEOUT: &str = "LINKERD2_PROXY_INBOUND_DISPATCH_TIMEOUT";
-const ENV_OUTBOUND_DISPATCH_TIMEOUT: &str = "LINKERD2_PROXY_OUTBOUND_DISPATCH_TIMEOUT";
+const ENV_INBOUND_SERVICE_ACQUISITION_TIMEOUT: &str =
+    "LINKERD2_PROXY_INBOUND_SERVICE_ACQUISITION_TIMEOUT";
+const ENV_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT: &str =
+    "LINKERD2_PROXY_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT";
 const ENV_INBOUND_CONNECT_TIMEOUT: &str = "LINKERD2_PROXY_INBOUND_CONNECT_TIMEOUT";
 const ENV_OUTBOUND_CONNECT_TIMEOUT: &str = "LINKERD2_PROXY_OUTBOUND_CONNECT_TIMEOUT";
 const ENV_INBOUND_ACCEPT_KEEPALIVE: &str = "LINKERD2_PROXY_INBOUND_ACCEPT_KEEPALIVE";
@@ -164,14 +166,14 @@ const DEFAULT_INBOUND_LISTEN_ADDR: &str = "0.0.0.0:4143";
 const DEFAULT_CONTROL_LISTEN_ADDR: &str = "0.0.0.0:4190";
 const DEFAULT_ADMIN_LISTEN_ADDR: &str = "127.0.0.1:4191";
 const DEFAULT_METRICS_RETAIN_IDLE: Duration = Duration::from_secs(10 * 60);
-const DEFAULT_INBOUND_DISPATCH_TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_INBOUND_SERVICE_ACQUISITION_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_INBOUND_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 const DEFAULT_INBOUND_CONNECT_BACKOFF: ExponentialBackoff = ExponentialBackoff {
     min: Duration::from_millis(100),
     max: Duration::from_millis(500),
     jitter: 0.1,
 };
-const DEFAULT_OUTBOUND_DISPATCH_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_OUTBOUND_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_OUTBOUND_CONNECT_BACKOFF: ExponentialBackoff = ExponentialBackoff {
     min: Duration::from_millis(100),
@@ -222,10 +224,18 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
     let inbound_listener_addr = parse(strings, ENV_INBOUND_LISTEN_ADDR, parse_socket_addr);
     let admin_listener_addr = parse(strings, ENV_ADMIN_LISTEN_ADDR, parse_socket_addr);
 
-    let inbound_dispatch_timeout = parse(strings, ENV_INBOUND_DISPATCH_TIMEOUT, parse_duration);
+    let inbound_service_acquisition_timeout = parse(
+        strings,
+        ENV_INBOUND_SERVICE_ACQUISITION_TIMEOUT,
+        parse_duration,
+    );
     let inbound_connect_timeout = parse(strings, ENV_INBOUND_CONNECT_TIMEOUT, parse_duration);
 
-    let outbound_dispatch_timeout = parse(strings, ENV_OUTBOUND_DISPATCH_TIMEOUT, parse_duration);
+    let outbound_service_acquisition_timeout = parse(
+        strings,
+        ENV_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT,
+        parse_duration,
+    );
     let outbound_connect_timeout = parse(strings, ENV_OUTBOUND_CONNECT_TIMEOUT, parse_duration);
 
     let inbound_accept_keepalive = parse(strings, ENV_INBOUND_ACCEPT_KEEPALIVE, parse_duration);
@@ -321,11 +331,6 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
         );
         let server = ServerConfig {
             bind: bind.with_sys_orig_dst_addr(),
-            buffer: BufferConfig {
-                dispatch_timeout: outbound_dispatch_timeout?
-                    .unwrap_or(DEFAULT_OUTBOUND_DISPATCH_TIMEOUT),
-                max_in_flight: outbound_max_in_flight?.unwrap_or(DEFAULT_OUTBOUND_MAX_IN_FLIGHT),
-            },
             h2_settings,
         };
         let connect = ConnectConfig {
@@ -351,6 +356,10 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
                     .unwrap_or(DEFAULT_OUTBOUND_ROUTER_MAX_IDLE_AGE),
                 router_capacity: outbound_router_capacity?
                     .unwrap_or(DEFAULT_OUTBOUND_ROUTER_CAPACITY),
+                service_acquisition_timeout: outbound_service_acquisition_timeout?
+                    .unwrap_or(DEFAULT_OUTBOUND_SERVICE_ACQUISITION_TIMEOUT),
+                max_in_flight_requests: outbound_max_in_flight?
+                    .unwrap_or(DEFAULT_OUTBOUND_MAX_IN_FLIGHT),
             },
         }
     };
@@ -363,11 +372,6 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
         );
         let server = ServerConfig {
             bind: bind.with_sys_orig_dst_addr(),
-            buffer: BufferConfig {
-                dispatch_timeout: inbound_dispatch_timeout?
-                    .unwrap_or(DEFAULT_INBOUND_DISPATCH_TIMEOUT),
-                max_in_flight: inbound_max_in_flight?.unwrap_or(DEFAULT_INBOUND_MAX_IN_FLIGHT),
-            },
             h2_settings,
         };
         let connect = ConnectConfig {
@@ -391,6 +395,10 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
                     .unwrap_or(DEFAULT_INBOUND_ROUTER_MAX_IDLE_AGE),
                 router_capacity: inbound_router_capacity?
                     .unwrap_or(DEFAULT_INBOUND_ROUTER_CAPACITY),
+                service_acquisition_timeout: inbound_service_acquisition_timeout?
+                    .unwrap_or(DEFAULT_INBOUND_SERVICE_ACQUISITION_TIMEOUT),
+                max_in_flight_requests: inbound_max_in_flight?
+                    .unwrap_or(DEFAULT_INBOUND_MAX_IN_FLIGHT),
             },
         }
     };
@@ -402,11 +410,6 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
         } else {
             outbound.proxy.connect.clone()
         };
-        let buffer = if addr.addr.is_loopback() {
-            inbound.proxy.server.buffer
-        } else {
-            outbound.proxy.server.buffer
-        };
         super::dst::Config {
             context: dst_token?.unwrap_or_default(),
             get_suffixes: dst_get_suffixes?
@@ -417,7 +420,7 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
             control: ControlConfig {
                 addr,
                 connect,
-                buffer,
+                buffer_capacity: 100,
             },
         }
     };
@@ -430,7 +433,6 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
                     .unwrap_or_else(|| parse_socket_addr(DEFAULT_ADMIN_LISTEN_ADDR).unwrap()),
                 inbound.proxy.server.bind.keepalive(),
             ),
-            buffer: inbound.proxy.server.buffer,
             h2_settings,
         },
     };
@@ -446,17 +448,17 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
     let oc_collector = match trace_collector_addr? {
         None => oc_collector::Config::Disabled,
         Some(addr) => {
-            let (connect, buffer) = if addr.addr.is_loopback() {
-                (inbound.proxy.connect.clone(), inbound.proxy.server.buffer)
+            let connect = if addr.addr.is_loopback() {
+                inbound.proxy.connect.clone()
             } else {
-                (outbound.proxy.connect.clone(), outbound.proxy.server.buffer)
+                outbound.proxy.connect.clone()
             };
             oc_collector::Config::Enabled {
                 hostname: hostname?,
                 control: ControlConfig {
                     addr,
-                    buffer,
                     connect,
+                    buffer_capacity: 10,
                 },
             }
         }
@@ -467,7 +469,6 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
             permitted_peer_identities: ids,
             server: ServerConfig {
                 bind: listen::Bind::new(addr, inbound.proxy.server.bind.keepalive()),
-                buffer: inbound.proxy.server.buffer,
                 h2_settings,
             },
         })
@@ -481,17 +482,12 @@ pub fn parse_config<S: Strings>(strings: &S) -> Result<super::Config, EnvError> 
             } else {
                 outbound.proxy.connect.clone()
             };
-            let buffer = if addr.identity.is_none() {
-                inbound.proxy.server.buffer
-            } else {
-                outbound.proxy.server.buffer
-            };
             identity::Config::Enabled {
                 certify,
                 control: ControlConfig {
                     addr,
                     connect,
-                    buffer,
+                    buffer_capacity: 1,
                 },
             }
         })
