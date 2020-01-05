@@ -181,23 +181,24 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Concrete>();
 
+            let profile_route_proxy = svc::stack(())
+                .push(http::metrics::layer::<_, classify::Response>(
+                    metrics.http_route_retry.clone(),
+                ))
+                .makes_clone::<dst::Route>()
+                .push(http::retry::layer(metrics.http_route_retry))
+                .makes::<dst::Route>()
+                .push(http::timeout::layer())
+                .push(http::metrics::layer::<_, classify::Response>(
+                    metrics.http_route,
+                ))
+                .push(classify::layer());
+
             let logical_profile_cache = balancer_cache
                 .serves::<Concrete>()
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
-                    svc::stack(())
-                        .push(http::metrics::layer::<_, classify::Response>(
-                            metrics.http_route_retry.clone(),
-                        ))
-                        .makes_clone::<dst::Route>()
-                        .push(http::retry::layer(metrics.http_route_retry))
-                        .makes::<dst::Route>()
-                        .push(http::timeout::layer())
-                        .push(http::metrics::layer::<_, classify::Response>(
-                            metrics.http_route,
-                        ))
-                        .push(classify::layer())
-                        .into_inner(),
+                    profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
                 .push_per_make(svc::map_target::layer(Concrete::from))
@@ -239,11 +240,11 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .serves::<Logical>();
 
-            // This basically duplicates the endpoint stack; but the client
-            // layer captures the requst body type into a phantomdata, so the
-            // stack cannot be shared directly between the balance and fallback
-            // stacks.
-            let fallback_cache = connect_stack
+            // This is effectively the same as the endpoint stack; but the
+            // client layer captures the requst body type (via PhantomData), so
+            // the stack cannot be shared directly between the balance and
+            // fallback stacks.
+            let bypass_cache = connect_stack
                 .clone()
                 .push(http::client::layer(connect.h2_settings))
                 .push(reconnect::layer({
@@ -252,7 +253,6 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(http::normalize_uri::layer())
                 .push(endpoint_layers)
-                .push(trace::layer(|_: &Endpoint| info_span!("fallback")))
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(router_capacity, router_max_idle_age)
@@ -261,12 +261,22 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .serves::<Endpoint>();
 
+            let admit_request = svc::layers()
+                .push_oneshot()
+                .push_concurrency_limit(buffer.max_in_flight)
+                .push_load_shed()
+                .push(errors::layer())
+                .push(trace_context::layer(span_sink.map(|span_sink| {
+                    SpanConverter::server(span_sink, trace_labels())
+                })))
+                .push(metrics.http_handle_time.layer());
+
             let server_stack = svc::stack(logical_stack)
                 .push_make_ready()
                 .push(svc::map_target::layer(|(l, _): (Logical, Endpoint)| l))
                 .push_per_make(svc::layers().boxed())
                 .push(fallback::layer(
-                    fallback_cache
+                    bypass_cache
                         .push_make_ready()
                         .push(svc::map_target::layer(|(_, e): (Logical, Endpoint)| e))
                         .push_per_make(svc::layers().boxed())
@@ -274,19 +284,9 @@ impl<A: OrigDstAddr> Config<A> {
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .serves::<(Logical, Endpoint)>()
                 .push_make_ready()
-                .push_timeout(Duration::from_secs(3))
+                .push_timeout(buffer.dispatch_timeout)
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
-                .push_per_make(
-                    svc::layers()
-                        .push_oneshot()
-                        .push_concurrency_limit(buffer.max_in_flight)
-                        .push_load_shed()
-                        .push(errors::layer())
-                        .push(trace_context::layer(span_sink.map(|span_sink| {
-                            SpanConverter::server(span_sink, trace_labels())
-                        })))
-                        .push(metrics.http_handle_time.layer()),
-                )
+                .push_per_make(admit_request)
                 .push(trace::layer(
                     |src: &tls::accept::Meta| {
                         info_span!("source", target.addr = %src.addrs.target_addr())
@@ -294,18 +294,16 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 .makes::<tls::accept::Meta>();
 
-            let forward_tcp = tcp::Forward::new(
-                svc::stack(connect_stack)
-                    .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                        Endpoint::from(meta.addrs.target_addr())
-                    }))
-                    .into_inner(),
-            );
+            let forward_tcp = svc::stack(connect_stack)
+                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                    Endpoint::from(meta.addrs.target_addr())
+                }))
+                .push(svc::layer::mk(tcp::Forward::new));
 
             let proxy = Server::new(
                 TransportLabels,
                 metrics.transport,
-                forward_tcp,
+                forward_tcp.into_inner(),
                 server_stack.into_inner(),
                 h2_settings,
                 drain.clone(),

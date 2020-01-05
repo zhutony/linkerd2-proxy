@@ -131,6 +131,14 @@ impl<A: OrigDstAddr> Config<A> {
                     )
                 }));
 
+            let profile_route_proxy = svc::stack(())
+                .push(insert::target::layer())
+                .push(http_metrics::layer::<_, classify::Response>(
+                    metrics.http_route,
+                ))
+                .push(classify::layer())
+                .makes_clone::<dst::Route>();
+
             // Determine the target for each request, obtain a profile route for
             // that target, and dispatch the request to it.
             let profile_cache = svc::stack(endpoint_cache)
@@ -143,14 +151,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<Target>()
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
-                    svc::stack(())
-                        .push(insert::target::layer())
-                        .push(http_metrics::layer::<_, classify::Response>(
-                            metrics.http_route,
-                        ))
-                        .push(classify::layer())
-                        .makes_clone::<dst::Route>()
-                        .into_inner(),
+                    profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
@@ -161,17 +162,26 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(|()| ProfileTarget))
                 .make(());
 
-            // Determine the target for each request, obtain a profile route for
-            // that target, and dispatch the request to it.
+            let admit_request = svc::layers()
+                .push(svc::layer::mk(orig_proto::Downgrade::new))
+                .push(strip_header::request::layer(L5D_REMOTE_IP))
+                .push(strip_header::request::layer(L5D_CLIENT_ID))
+                .push(strip_header::response::layer(L5D_SERVER_ID))
+                .push_oneshot()
+                .push_concurrency_limit(buffer.max_in_flight)
+                .push_load_shed()
+                .push(errors::layer())
+                .push(trace_context::layer(span_sink.map(|span_sink| {
+                    SpanConverter::server(span_sink, trace_labels())
+                })))
+                .push(metrics.http_handle_time.layer());
+
             let source_stack = svc::stack(profile_cache)
                 .serves::<Target>()
                 .push_make_ready()
                 .push(normalize_uri::layer())
-                .push_per_make(
-                    svc::layers()
-                        .push_ready_timeout(Duration::from_secs(10))
-                        .push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
-                )
+                .push_timeout(buffer.dispatch_timeout)
+                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 .push(trace::layer(|t: &Target| {
                     info_span!(
                         "target",
@@ -182,21 +192,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
                 .push(trace::layer(|src: &tls::accept::Meta| info_span!("router")))
-                .push_per_make(
-                    svc::layers()
-                        .push(svc::layer::mk(orig_proto::Downgrade::new))
-                        .push(strip_header::request::layer(L5D_REMOTE_IP))
-                        .push(strip_header::request::layer(L5D_CLIENT_ID))
-                        .push(strip_header::response::layer(L5D_SERVER_ID))
-                        .push_oneshot()
-                        .push_concurrency_limit(buffer.max_in_flight)
-                        .push_load_shed()
-                        .push(errors::layer())
-                        .push(trace_context::layer(span_sink.map(|span_sink| {
-                            SpanConverter::server(span_sink, trace_labels())
-                        })))
-                        .push(metrics.http_handle_time.layer()),
-                )
+                .push_per_make(admit_request)
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",
@@ -205,18 +201,16 @@ impl<A: OrigDstAddr> Config<A> {
                     )
                 }));
 
-            let forward_tcp = tcp::Forward::new(
-                svc::stack(connect_stack)
-                    .push(svc::map_target::layer(|meta: tls::accept::Meta| {
-                        Endpoint::from(meta.addrs.target_addr())
-                    }))
-                    .into_inner(),
-            );
+            let forward_tcp = svc::stack(connect_stack)
+                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                    Endpoint::from(meta.addrs.target_addr())
+                }))
+                .push(svc::layer::mk(tcp::Forward::new));
 
             let server = Server::new(
                 TransportLabels,
                 metrics.transport,
-                forward_tcp,
+                forward_tcp.into_inner(),
                 source_stack.into_inner(),
                 h2_settings,
                 drain.clone(),
