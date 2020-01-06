@@ -108,16 +108,16 @@ where
     }
 }
 
-impl<T, M> svc::Make<T> for Stack<M>
+impl<T, M> svc::NewService<T> for Stack<M>
 where
     T: CanClassify,
-    M: svc::Make<T>,
+    M: svc::NewService<T>,
 {
     type Service = Proxy<T::Classify, M::Service>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         let classify = target.classify();
-        let inner = self.inner.make(target);
+        let inner = self.inner.new_service(target);
         Proxy { classify, inner }
     }
 }

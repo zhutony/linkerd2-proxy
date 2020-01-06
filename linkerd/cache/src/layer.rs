@@ -1,6 +1,6 @@
 use crate::Service;
 use futures::Future;
-use linkerd2_stack::Make;
+use linkerd2_stack::NewService;
 use std::time::Duration;
 use tracing::info_span;
 use tracing_futures::Instrument;
@@ -57,7 +57,7 @@ impl<M> MakeCache<M> {
     pub fn spawn<T>(self) -> Service<T, M>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
-        M: Make<T> + Send + 'static,
+        M: NewService<T> + Send + 'static,
         M::Service: Clone + Send + 'static,
     {
         let (service, purge) =

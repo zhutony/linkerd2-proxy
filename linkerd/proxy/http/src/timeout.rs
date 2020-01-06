@@ -1,6 +1,6 @@
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_stack::{Make, Proxy};
+use linkerd2_stack::{NewService, Proxy};
 use linkerd2_timeout::{error, Timeout as Inner, TimeoutFuture};
 use std::time::Duration;
 use tracing::{debug, error};
@@ -50,17 +50,17 @@ impl<M> tower::layer::Layer<M> for Layer {
     }
 }
 
-impl<T, M> Make<T> for Stack<M>
+impl<T, M> NewService<T> for Stack<M>
 where
-    M: Make<T>,
+    M: NewService<T>,
     T: HasTimeout,
 {
     type Service = Timeout<M::Service>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         match target.timeout() {
-            Some(t) => Timeout(Inner::new(self.inner.make(target), t)),
-            None => Timeout(Inner::passthru(self.inner.make(target))),
+            Some(t) => Timeout(Inner::new(self.inner.new_service(target), t)),
+            None => Timeout(Inner::passthru(self.inner.new_service(target))),
         }
     }
 }

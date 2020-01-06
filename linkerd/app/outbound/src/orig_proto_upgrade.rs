@@ -32,16 +32,16 @@ impl<M> svc::Layer<M> for Layer {
 
 // === impl MakeSvc ===
 
-impl<M> svc::Make<HttpEndpoint> for MakeSvc<M>
+impl<N> svc::NewService<HttpEndpoint> for MakeSvc<N>
 where
-    M: svc::Make<HttpEndpoint>,
+    N: svc::NewService<HttpEndpoint>,
 {
-    type Service = svc::Either<orig_proto::Upgrade<M::Service>, M::Service>;
+    type Service = svc::Either<orig_proto::Upgrade<N::Service>, N::Service>;
 
-    fn make(&self, mut endpoint: HttpEndpoint) -> Self::Service {
+    fn new_service(&self, mut endpoint: HttpEndpoint) -> Self::Service {
         if !endpoint.can_use_orig_proto() {
             trace!("Endpoint does not support transparent HTTP/2 upgrades");
-            return svc::Either::B(self.inner.make(endpoint));
+            return svc::Either::B(self.inner.new_service(endpoint));
         }
 
         let was_absolute = endpoint.concrete.settings.was_absolute_form();
@@ -52,7 +52,7 @@ where
         );
         endpoint.concrete.settings = Settings::Http2;
 
-        let mut upgrade = orig_proto::Upgrade::new(self.inner.make(endpoint));
+        let mut upgrade = orig_proto::Upgrade::new(self.inner.new_service(endpoint));
         upgrade.absolute_form = was_absolute;
         svc::Either::A(upgrade)
     }

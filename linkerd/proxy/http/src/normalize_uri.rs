@@ -1,7 +1,7 @@
 use super::h1;
 use futures::{try_ready, Future, Poll};
 use http::uri::Authority;
-use linkerd2_stack::{layer, Make};
+use linkerd2_stack::{layer, NewService};
 use tracing::trace;
 
 pub trait ShouldNormalizeUri {
@@ -32,18 +32,18 @@ pub fn layer<M>() -> impl layer::Layer<M, Service = MakeNormalizeUri<M>> + Copy 
 
 // === impl MakeNormalizeUri ===
 
-impl<T, M> Make<T> for MakeNormalizeUri<M>
+impl<T, M> NewService<T> for MakeNormalizeUri<M>
 where
     T: ShouldNormalizeUri,
-    M: Make<T>,
+    M: NewService<T>,
 {
     type Service = NormalizeUri<M::Service>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         let authority = target.should_normalize_uri();
-        tracing::trace!(?authority, "make");
+        tracing::trace!(?authority, "new");
 
-        let inner = self.inner.make(target);
+        let inner = self.inner.new_service(target);
         NormalizeUri { inner, authority }
     }
 }

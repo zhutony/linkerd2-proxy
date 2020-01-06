@@ -1,10 +1,10 @@
 use super::{RequestMatch, Route, WithRoute};
-use linkerd2_stack::{Make, Proxy};
+use linkerd2_stack::{NewService, Proxy};
 use tracing::trace;
 
 /// A proxy that applies per-request "routes" over a common inner service.
 #[derive(Clone, Debug, Default)]
-pub struct Requests<T: WithRoute, M: Make<T::Route>> {
+pub struct Requests<T: WithRoute, M: NewService<T::Route>> {
     target: T,
     make: M,
     default: M::Service,
@@ -14,12 +14,12 @@ pub struct Requests<T: WithRoute, M: Make<T::Route>> {
 impl<T, M> Requests<T, M>
 where
     T: Clone + WithRoute,
-    M: Make<T::Route>,
+    M: NewService<T::Route>,
 {
     pub fn new(target: T, make: M, default: Route) -> Self {
         let default = {
             let t = target.clone().with_route(default);
-            make.make(t)
+            make.new_service(t)
         };
         Self {
             target,
@@ -34,7 +34,7 @@ where
             .into_iter()
             .map(|(cond, r)| {
                 let t = self.target.clone().with_route(r);
-                (cond, self.make.make(t))
+                (cond, self.make.new_service(t))
             })
             .collect();
     }
@@ -43,7 +43,7 @@ where
 impl<T, M, P, B, S> Proxy<http::Request<B>, S> for Requests<T, M>
 where
     T: WithRoute,
-    M: Make<T::Route, Service = P>,
+    M: NewService<T::Route, Service = P>,
     P: Proxy<http::Request<B>, S>,
     S: tower::Service<P::Request>,
 {

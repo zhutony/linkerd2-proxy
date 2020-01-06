@@ -1,6 +1,6 @@
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
-use linkerd2_stack::Make;
+use linkerd2_stack::NewService;
 use std::hash::Hash;
 use tower::util::{Oneshot, ServiceExt};
 use tracing::trace;
@@ -17,7 +17,7 @@ pub struct Layer<T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct MakeRouter<T, M> {
+pub struct NewRouter<T, M> {
     make_key: T,
     make_route: M,
 }
@@ -35,26 +35,26 @@ impl<K: Clone> Layer<K> {
 }
 
 impl<K: Clone, M> tower::layer::Layer<M> for Layer<K> {
-    type Service = MakeRouter<K, M>;
+    type Service = NewRouter<K, M>;
 
     fn layer(&self, make_route: M) -> Self::Service {
-        MakeRouter {
+        NewRouter {
             make_route,
             make_key: self.make_key.clone(),
         }
     }
 }
 
-impl<T, K, M> Make<T> for MakeRouter<K, M>
+impl<T, K, M> NewService<T> for NewRouter<K, M>
 where
-    K: Make<T>,
+    K: NewService<T>,
     M: Clone,
 {
     type Service = Router<K::Service, M>;
 
-    fn make(&self, t: T) -> Self::Service {
+    fn new_service(&self, t: T) -> Self::Service {
         Router {
-            key: self.make_key.make(t),
+            key: self.make_key.new_service(t),
             make: self.make_route.clone(),
         }
     }

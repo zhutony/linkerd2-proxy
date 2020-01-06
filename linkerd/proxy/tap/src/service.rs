@@ -5,7 +5,7 @@ use futures::{try_ready, Async, Future, Poll, Stream};
 use http;
 use hyper::body::Payload as HyperPayload;
 use linkerd2_proxy_http::HasH2Reason;
-use linkerd2_stack::Make;
+use linkerd2_stack::NewService;
 
 /// A layer that wraps MakeServices to record taps.
 #[derive(Clone, Debug)]
@@ -79,17 +79,17 @@ where
 
 // === Stack ===
 
-impl<R, T, M> Make<T> for Stack<R, M>
+impl<R, T, M> NewService<T> for Stack<R, M>
 where
     T: Inspect + Clone,
     R: Register + Clone,
-    M: Make<T>,
+    M: NewService<T>,
 {
     type Service = Service<T, R::Taps, R::Tap, M::Service>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         let inspect = target.clone();
-        let inner = self.inner.make(target);
+        let inner = self.inner.new_service(target);
         let tap_rx = self.registry.clone().register();
         Service {
             inner,

@@ -1,4 +1,4 @@
-use crate::per_make;
+use crate::per_service;
 pub use tower::layer::Layer;
 
 /// Make a `Layer` from a closure.
@@ -24,11 +24,11 @@ where
 pub trait LayerExt<S>: Layer<S> {
     /// Apply this layer to a `MakeService` such that every made service
     /// has this layer applied.
-    fn per_make(self) -> per_make::Layer<Self>
+    fn per_service(self) -> per_service::Layer<Self>
     where
         Self: Clone + Sized,
     {
-        per_make::layer(self)
+        per_service::layer(self)
     }
 }
 

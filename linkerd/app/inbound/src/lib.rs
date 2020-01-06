@@ -26,7 +26,7 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc::{self, Make},
+    svc::{self, NewService},
     trace, trace_context,
     transport::{self, connect, io::BoxedIo, tls, OrigDstAddr, SysOrigDstAddr},
     Error, ProxyMetrics, DST_OVERRIDE_HEADER, L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_SERVER_ID,
@@ -117,7 +117,7 @@ impl<A: OrigDstAddr> Config<A> {
                     move |_| Ok(backoff.stream())
                 }))
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|ep: &HttpEndpoint| {
                     info_span!(
@@ -126,7 +126,7 @@ impl<A: OrigDstAddr> Config<A> {
                         http = ?ep.settings,
                     )
                 }))
-                .serves::<HttpEndpoint>();
+                .check_service::<HttpEndpoint>();
 
             let http_target_observability = svc::layers()
                 // Registers the stack to be tapped.
@@ -135,7 +135,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
                 ))
-                .push_per_make(trace_context::layer(
+                .push_per_service(trace_context::layer(
                     span_sink
                         .clone()
                         .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
@@ -152,30 +152,30 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets the per-route response classifier as a request
                 // extension.
                 .push(classify::layer())
-                .makes_clone::<dst::Route>();
+                .check_new_clone_service::<dst::Route>();
 
             // Routes targets to a Profile stack, i.e. so that profile
             // resolutions are shared even as the type of request may vary.
             let http_profile_cache = http_endpoint_cache
-                .serves::<HttpEndpoint>()
+                .check_service::<HttpEndpoint>()
                 .push(svc::map_target::layer(HttpEndpoint::from))
                 .push(http_target_observability)
-                .serves::<Target>()
+                .check_service::<Target>()
                 // Provides route configuration without pdestination overrides.
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::new())
                 // Caches profile stacks.
-                .makes_clone::<Profile>()
+                .check_new_clone_service::<Profile>()
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
-                .serves::<Profile>()
+                .check_service::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
-                .routes::<(), Target>()
-                .make(());
+                .check_new_service_routes::<(), Target>()
+                .new_service(());
 
             // Strips headers that may be set by the inbound router.
             let http_strip_headers = svc::layers()
@@ -208,7 +208,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer());
 
             let http_server = svc::stack(http_profile_cache)
-                .serves::<Target>()
+                .check_service::<Target>()
                 // Normalizes the URI, i.e. if it was originally in
                 // absolute-form on the outbound side.
                 .push(normalize_uri::layer())
@@ -220,15 +220,15 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_timeout(service_acquisition_timeout)
                 // Removes the override header after it has been used to
                 // determine a reuquest target.
-                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push_per_service(strip_header::request::layer(DST_OVERRIDE_HEADER))
                 // Routes each request to a target, obtains a service for that
                 // target, and dispatches the request.
                 .push(trace::Layer::from_target())
                 .push(router::Layer::new(RequestTarget::from))
-                .makes::<tls::accept::Meta>()
-                .push_per_make(http_strip_headers)
-                .push_per_make(http_admit_request)
-                .push_per_make(http_server_observability)
+                .check_new_service::<tls::accept::Meta>()
+                .push_per_service(http_strip_headers)
+                .push_per_service(http_admit_request)
+                .push_per_service(http_server_observability)
                 .push(trace::layer(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",

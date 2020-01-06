@@ -5,7 +5,7 @@ use futures::{try_ready, Async, Future, Poll};
 use http;
 use hyper::body::Payload;
 use linkerd2_error::Error;
-use linkerd2_stack::{Make, Proxy};
+use linkerd2_stack::{NewService, Proxy};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -160,17 +160,17 @@ where
     }
 }
 
-impl<T, M, K, C> Make<T> for MakeSvc<M, K, C>
+impl<T, M, K, C> NewService<T> for MakeSvc<M, K, C>
 where
     T: Clone + Debug + Into<K>,
     K: Hash + Eq,
-    M: Make<T>,
+    M: NewService<T>,
     C: ClassifyResponse + Default + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
     type Service = Metrics<M::Service, C>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         let metrics = match self.registry.lock() {
             Ok(mut r) => Some(
                 r.by_target
@@ -181,7 +181,7 @@ where
             Err(_) => None,
         };
 
-        let inner = self.inner.make(target);
+        let inner = self.inner.new_service(target);
 
         Metrics {
             inner,

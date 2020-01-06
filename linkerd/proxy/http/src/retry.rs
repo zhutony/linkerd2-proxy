@@ -3,7 +3,7 @@ use futures::{future, try_ready, Future, Poll};
 use http::{Request, Response};
 use linkerd2_error::Error;
 use linkerd2_proxy_transport::tls;
-use linkerd2_stack::{proxy, Make, Proxy};
+use linkerd2_stack::{proxy, NewService, Proxy};
 use tower::retry;
 pub use tower::retry::budget::Budget;
 pub use tower::util::{Oneshot, ServiceExt};
@@ -83,23 +83,23 @@ impl<M, R: Clone> tower::layer::Layer<M> for Layer<R> {
 
 // === impl Stack ===
 
-impl<T, M, R> Make<T> for Stack<M, R>
+impl<T, M, R> NewService<T> for Stack<M, R>
 where
     T: CanRetry + Clone,
-    M: Make<T>,
+    M: NewService<T>,
     M::Service: Clone,
     R: Scoped<T>,
     R::Scope: Clone,
 {
     type Service = Service<Policy<T::Retry, R::Scope>, M::Service>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         if let Some(retries) = target.can_retry() {
             trace!("stack is retryable");
             let policy = Policy(retries, self.registry.scoped(target.clone()));
-            Service::Retry(policy, self.inner.make(target))
+            Service::Retry(policy, self.inner.new_service(target))
         } else {
-            Service::Inner(self.inner.make(target))
+            Service::Inner(self.inner.new_service(target))
         }
     }
 }

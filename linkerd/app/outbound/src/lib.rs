@@ -25,7 +25,7 @@ use linkerd2_app_core::{
     },
     reconnect, router, serve,
     spans::SpanConverter,
-    svc::{self, Make},
+    svc::{self, NewService},
     trace, trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     Conditional, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER, L5D_CLIENT_ID,
@@ -136,7 +136,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint.clone(),
                 ))
-                .push_per_make(trace_context::layer(
+                .push_per_service(trace_context::layer(
                     span_sink
                         .clone()
                         .map(|sink| SpanConverter::client(sink, trace_labels())),
@@ -145,7 +145,7 @@ impl<A: OrigDstAddr> Config<A> {
             // Checks the headers to validate that a client-specified required
             // identity matches the configured identity.
             let http_endpoint_identity_headers = svc::layers()
-                .push_per_make(
+                .push_per_service(
                     svc::layers()
                         .push(http::strip_header::response::layer(L5D_REMOTE_IP))
                         .push(http::strip_header::response::layer(L5D_SERVER_ID))
@@ -200,11 +200,11 @@ impl<A: OrigDstAddr> Config<A> {
             let http_balancer_cache = http_balancer_endpoint
                 .push_spawn_ready()
                 .push(discover)
-                .push_per_make(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
-                .serves::<Concrete>()
+                .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
+                .check_service::<Concrete>()
                 .push_pending()
                 // Shares the balancer, ensuring discovery errors are propagated.
-                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
+                .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
@@ -226,13 +226,13 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets the per-route response classifier as a request
                 // extension.
                 .push(classify::layer())
-                .makes_clone::<dst::Route>();
+                .check_new_clone_service::<dst::Route>();
 
             // Routes `Logical` targets to a cached `Profile` stack, i.e. so
             // that profile resolutions are shared even as the type of request
             // may vary.
             let http_logical_profile_cache = http_balancer_cache
-                .serves::<Concrete>()
+                .check_service::<Concrete>()
                 // Provides route configuration. The profile service operates
                 // over `Concret` services. When overrides are in play, the
                 // Concrete destination may be overridden.
@@ -242,22 +242,22 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
-                .push_per_make(svc::map_target::layer(Concrete::from))
+                .push_per_service(svc::map_target::layer(Concrete::from))
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
+                .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
-                .serves::<Profile>()
+                .check_service::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
-                .routes::<(), Logical>()
-                .make(());
+                .check_new_service_routes::<(), Logical>()
+                .new_service(());
 
             // Caches DNS refinements from relative names to canonical names.
             //
             // For example, a client may send requests to `foo` or `foo.ns`; and
             // the canonical form of these names is `foo.ns.svc.cluster.local
             let dns_refine_cache = svc::stack(dns_resolver.into_make_refine())
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(
                     |name: &dns::Name| info_span!("canonicalize", %name),
@@ -266,7 +266,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(svc::make_response::Layer)
                 // Ensures that the cache isn't locked when polling readiness.
                 .push_oneshot()
-                .serves_rsp::<dns::Name, dns::Name>()
+                .check_service_response::<dns::Name, dns::Name>()
                 .into_inner();
 
             // Routes requests to their logical target.
@@ -278,7 +278,7 @@ impl<A: OrigDstAddr> Config<A> {
                     dns_refine_cache,
                     canonicalize_timeout,
                 ))
-                .push_per_make(
+                .push_per_service(
                     // Strips headers that may be set by this proxy.
                     svc::layers()
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
@@ -303,12 +303,12 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_endpoint_observability.clone())
                 .push(http_endpoint_identity_headers.clone())
                 .push_pending()
-                .push_per_make(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|endpoint: &HttpEndpoint| {
                     info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
-                .serves::<HttpEndpoint>();
+                .check_service::<HttpEndpoint>();
 
             let http_admit_request = svc::layers()
                 // Ensures that load is not shed if the inner service is in-use.
@@ -333,25 +333,25 @@ impl<A: OrigDstAddr> Config<A> {
             let http_server = http_logical_router
                 .push_make_ready()
                 .push(svc::map_target::layer(|(l, _): (Logical, HttpEndpoint)| l))
-                .push_per_make(svc::layers().boxed())
+                .push_per_service(svc::layers().boxed())
                 .push(fallback::layer(
                     http_forward_cache
                         .push_make_ready()
                         .push(svc::map_target::layer(|(_, e): (Logical, HttpEndpoint)| e))
-                        .push_per_make(svc::layers().boxed())
+                        .push_per_service(svc::layers().boxed())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
-                .serves::<(Logical, HttpEndpoint)>()
+                .check_service::<(Logical, HttpEndpoint)>()
                 .push_make_ready()
                 .push_timeout(service_acquisition_timeout)
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
-                .push_per_make(http_admit_request)
+                .push_per_service(http_admit_request)
                 .push(trace::layer(
                     |src: &tls::accept::Meta| {
                         info_span!("source", target.addr = %src.addrs.target_addr())
                     },
                 ))
-                .makes::<tls::accept::Meta>();
+                .check_new_service::<tls::accept::Meta>();
 
             let tcp_server = Server::new(
                 TransportLabels,

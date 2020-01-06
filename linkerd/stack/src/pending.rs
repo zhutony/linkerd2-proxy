@@ -1,4 +1,4 @@
-use crate::Make;
+use crate::NewService;
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
 use tower::util::{Oneshot, ServiceExt};
@@ -7,7 +7,7 @@ use tower::util::{Oneshot, ServiceExt};
 pub struct Layer(());
 
 #[derive(Clone, Debug)]
-pub struct MakePending<M> {
+pub struct NewPending<M> {
     inner: M,
 }
 
@@ -25,22 +25,22 @@ pub fn layer() -> Layer {
 // === impl Layer ===
 
 impl<M> tower::layer::Layer<M> for Layer {
-    type Service = MakePending<M>;
+    type Service = NewPending<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        MakePending { inner }
+        NewPending { inner }
     }
 }
 
-// === impl MakePending ===
+// === impl NewPending ===
 
-impl<T, M> Make<T> for MakePending<M>
+impl<T, M> NewService<T> for NewPending<M>
 where
     M: tower::Service<T> + Clone,
 {
     type Service = Pending<Oneshot<M, T>, <M as tower::Service<T>>::Response>;
 
-    fn make(&self, target: T) -> Self::Service {
+    fn new_service(&self, target: T) -> Self::Service {
         let fut = self.inner.clone().oneshot(target);
         Pending::Making(fut)
     }

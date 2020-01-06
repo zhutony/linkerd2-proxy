@@ -16,7 +16,7 @@ pub use linkerd2_app_core::{self as core, trace};
 use linkerd2_app_core::{
     config::ControlAddr,
     dns, drain,
-    svc::{self, Make},
+    svc::{self, NewService},
     transport::{OrigDstAddr, SysOrigDstAddr},
     Error,
 };
@@ -141,15 +141,15 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push(http::metrics::layer::<_, classify::Response>(metrics))
                     .push(control::add_origin::layer())
                     .push_pending()
-                    .push_per_make(
+                    .push_per_service(
                         svc::layers()
                             .push(grpc::req_body_as_payload::layer())
                             // TODO .push(svc::lock::Layer::new())
                             .push_buffer(dst.control.buffer_capacity),
                     )
-                    .makes::<ControlAddr>()
+                    .check_new_service::<ControlAddr>()
                     .into_inner()
-                    .make(dst.control.addr.clone());
+                    .new_service(dst.control.addr.clone());
                 dst.build(svc)
             })
         }?;

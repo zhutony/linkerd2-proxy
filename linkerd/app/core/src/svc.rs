@@ -6,8 +6,8 @@ use crate::{cache, proxy::http, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
-    self as stack, layer, map_response, map_target, oneshot, pending, per_make, Layer, LayerExt,
-    Make, Shared,
+    self as stack, layer, map_response, map_target, new_service, oneshot, pending, per_service,
+    Layer, LayerExt, NewService,
 };
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
@@ -21,9 +21,6 @@ pub struct Layers<L>(L);
 
 #[derive(Clone, Debug)]
 pub struct Stack<S>(S);
-
-#[derive(Clone, Debug)]
-pub struct Proxies<P>(P);
 
 pub fn layers() -> Layers<Identity> {
     Layers(Identity::new())
@@ -87,12 +84,12 @@ impl<L> Layers<L> {
         self.push(oneshot::Layer::new())
     }
 
-    pub fn push_per_make<O: Clone>(self, layer: O) -> Layers<Pair<L, per_make::Layer<O>>> {
-        self.push(per_make::layer(layer))
+    pub fn push_per_service<O: Clone>(self, layer: O) -> Layers<Pair<L, per_service::Layer<O>>> {
+        self.push(per_service::layer(layer))
     }
 
-    pub fn per_make(self) -> Layers<per_make::Layer<L>> {
-        Layers(per_make::layer(self.0))
+    pub fn per_service(self) -> Layers<per_service::Layer<L>> {
+        Layers(per_service::layer(self.0))
     }
 }
 
@@ -109,7 +106,7 @@ impl<S> Stack<S> {
         Stack(layer.layer(self.0))
     }
 
-    pub fn push_pending(self) -> Stack<pending::MakePending<S>> {
+    pub fn push_pending(self) -> Stack<pending::NewPending<S>> {
         self.push(pending::layer())
     }
 
@@ -161,8 +158,8 @@ impl<S> Stack<S> {
         self.push(oneshot::Layer::new())
     }
 
-    pub fn push_per_make<L: Clone>(self, layer: L) -> Stack<per_make::PerMake<L, S>> {
-        self.push(per_make::layer(layer))
+    pub fn push_per_service<L: Clone>(self, layer: L) -> Stack<per_service::PerService<L, S>> {
+        self.push(per_service::layer(layer))
     }
 
     pub fn push_map_response<R: Clone>(
@@ -179,7 +176,7 @@ impl<S> Stack<S> {
     ) -> Stack<cache::Service<T, S>>
     where
         T: Clone + Eq + std::hash::Hash + Send + 'static,
-        S: Make<T> + Send + 'static,
+        S: NewService<T> + Send + 'static,
         S::Service: Clone + Send + 'static,
     {
         Stack(
@@ -201,30 +198,30 @@ impl<S> Stack<S> {
     }
 
     /// Validates that this stack serves T-typed targets.
-    pub fn makes<T>(self) -> Self
+    pub fn check_new_service<T>(self) -> Self
     where
-        S: Make<T>,
+        S: NewService<T>,
     {
         self
     }
 
-    pub fn makes_clone<T>(self) -> Self
+    pub fn check_new_clone_service<T>(self) -> Self
     where
-        S: Make<T>,
+        S: NewService<T>,
         S::Service: Clone,
     {
         self
     }
 
     /// Validates that this stack serves T-typed targets.
-    pub fn serves<T>(self) -> Self
+    pub fn check_service<T>(self) -> Self
     where
         S: Service<T>,
     {
         self
     }
 
-    pub fn serves_rsp<T, U>(self) -> Self
+    pub fn check_service_response<T, U>(self) -> Self
     where
         S: Service<T, Response = U>,
     {
@@ -232,9 +229,9 @@ impl<S> Stack<S> {
     }
 
     /// Validates that this stack serves T-typed targets.
-    pub fn routes<T, Req>(self) -> Self
+    pub fn check_new_service_routes<T, Req>(self) -> Self
     where
-        S: Make<T>,
+        S: NewService<T>,
         S::Service: Service<Req>,
     {
         self
@@ -245,14 +242,14 @@ impl<S> Stack<S> {
     }
 }
 
-impl<T, S> Make<T> for Stack<S>
+impl<T, N> NewService<T> for Stack<N>
 where
-    S: Make<T>,
+    N: NewService<T>,
 {
-    type Service = S::Service;
+    type Service = N::Service;
 
-    fn make(&self, t: T) -> Self::Service {
-        self.0.make(t)
+    fn new_service(&self, t: T) -> Self::Service {
+        self.0.new_service(t)
     }
 }
 

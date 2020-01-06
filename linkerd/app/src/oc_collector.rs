@@ -3,7 +3,7 @@ use futures::{future, Future};
 use linkerd2_app_core::{
     config::{ControlAddr, ControlConfig},
     control, proxy, reconnect,
-    svc::{self, LayerExt, Make},
+    svc::{self, LayerExt, NewService},
     transport::{connect, tls},
     Error,
 };
@@ -61,13 +61,13 @@ impl Config {
                         let backoff = control.connect.backoff;
                         move |_| Ok(backoff.stream())
                     }))
-                    .push(proxy::grpc::req_body_as_payload::layer().per_make())
+                    .push(proxy::grpc::req_body_as_payload::layer().per_service())
                     .push(control::add_origin::layer())
                     .push_pending()
-                    .push_per_make(svc::lock::Layer::new())
-                    .makes::<ControlAddr>()
+                    .push_per_service(svc::lock::Layer::new())
+                    .check_new_service::<ControlAddr>()
                     .into_inner()
-                    .make(addr.clone());
+                    .new_service(addr.clone());
 
                 let (span_sink, spans_rx) = mpsc::channel(Self::SPAN_BUFFER_CAPACITY);
 

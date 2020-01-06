@@ -9,7 +9,7 @@ use crate::{
             upgrade, Version as HttpVersion,
         },
     },
-    svc::{Make, Service, ServiceExt},
+    svc::{NewService, Service, ServiceExt},
     transport::{self, io::BoxedIo, labels::Key as TransportKey, metrics::TransportLabels, tls},
     Error,
 };
@@ -77,7 +77,7 @@ impl detect::Detect<tls::accept::Meta> for ProtocolDetect {
 ///    can route HTTP  requests for the `tls::accept::Meta`.
 pub struct Server<L, F, H, B>
 where
-    H: Make<tls::accept::Meta>,
+    H: NewService<tls::accept::Meta>,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>>,
 {
     http: hyper::server::conn::Http,
@@ -92,7 +92,7 @@ where
 impl<L, F, H, B> Server<L, F, H, B>
 where
     L: TransportLabels<Protocol, Labels = TransportKey>,
-    H: Make<tls::accept::Meta>,
+    H: NewService<tls::accept::Meta>,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>>,
     Self: Accept<Connection>,
 {
@@ -126,7 +126,7 @@ where
     L: TransportLabels<Protocol, Labels = TransportKey>,
     F: Accept<(tls::accept::Meta, transport::metrics::Io<BoxedIo>)> + Clone + Send + 'static,
     F::Future: Send + 'static,
-    H: Make<tls::accept::Meta> + Send + 'static,
+    H: NewService<tls::accept::Meta> + Send + 'static,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>, Error = Error>
         + Send
         + 'static,
@@ -168,7 +168,7 @@ where
             }
         };
 
-        let http_svc = self.make_http.make(proto.tls);
+        let http_svc = self.make_http.new_service(proto.tls);
 
         let builder = self.http.clone();
         let initial_stream_window_size = self.h2_settings.initial_stream_window_size;
@@ -215,7 +215,7 @@ impl<L, F, H, B> Clone for Server<L, F, H, B>
 where
     L: TransportLabels<Protocol, Labels = TransportKey> + Clone,
     F: Clone,
-    H: Make<tls::accept::Meta> + Clone,
+    H: NewService<tls::accept::Meta> + Clone,
     H::Service: Service<http::Request<HttpBody>, Response = http::Response<B>>,
     B: hyper::body::Payload,
 {

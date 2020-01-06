@@ -1,14 +1,14 @@
 use futures::{try_ready, Future, Poll};
 
-pub fn layer<L>(per_make: L) -> Layer<L> {
-    Layer(per_make)
+pub fn layer<L>(per_service: L) -> Layer<L> {
+    Layer(per_service)
 }
 
 #[derive(Clone, Debug)]
 pub struct Layer<L>(L);
 
 #[derive(Clone, Debug)]
-pub struct PerMake<L, M> {
+pub struct PerService<L, M> {
     inner: M,
     layer: L,
 }
@@ -19,29 +19,29 @@ pub struct MakeFuture<L, F> {
 }
 
 impl<M, L: Clone> super::Layer<M> for Layer<L> {
-    type Service = PerMake<L, M>;
+    type Service = PerService<L, M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        PerMake {
+        Self::Service {
             inner,
             layer: self.0.clone(),
         }
     }
 }
 
-impl<T, L, M> super::Make<T> for PerMake<L, M>
+impl<T, L, M> super::NewService<T> for PerService<L, M>
 where
     L: super::Layer<M::Service>,
-    M: super::Make<T>,
+    M: super::NewService<T>,
 {
     type Service = L::Service;
 
-    fn make(&self, target: T) -> Self::Service {
-        self.layer.layer(self.inner.make(target))
+    fn new_service(&self, target: T) -> Self::Service {
+        self.layer.layer(self.inner.new_service(target))
     }
 }
 
-impl<T, L, M> tower::Service<T> for PerMake<L, M>
+impl<T, L, M> tower::Service<T> for PerService<L, M>
 where
     L: super::Layer<M::Response> + Clone,
     M: tower::Service<T>,

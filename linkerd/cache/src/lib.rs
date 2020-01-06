@@ -4,7 +4,7 @@ use self::cache::Cache;
 pub use self::layer::Layer;
 pub use self::purge::Purge;
 use futures::{future, Async, Poll};
-use linkerd2_stack::Make;
+use linkerd2_stack::NewService;
 use std::hash::Hash;
 use std::time::Duration;
 use tokio::sync::lock::{Lock, LockGuard};
@@ -18,7 +18,7 @@ mod purge;
 pub struct Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T>,
+    M: NewService<T>,
 {
     make: M,
     cache: Lock<Cache<T, M::Service>>,
@@ -31,7 +31,7 @@ where
 impl<T, M> Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T>,
+    M: NewService<T>,
     M::Service: Clone,
 {
     pub fn new(make: M, capacity: usize, max_idle_age: Duration) -> (Self, Purge<T, M::Service>) {
@@ -51,7 +51,7 @@ where
 impl<T, M> Clone for Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T> + Clone,
+    M: NewService<T> + Clone,
     M::Service: Clone,
 {
     fn clone(&self) -> Self {
@@ -67,7 +67,7 @@ where
 impl<T, M> tower::Service<T> for Service<T, M>
 where
     T: Clone + Eq + Hash,
-    M: Make<T>,
+    M: NewService<T>,
     M::Service: Clone,
 {
     type Response = M::Service;
@@ -106,7 +106,7 @@ where
 
         // Make a new service for the target
         debug!(%available, "inserting new target into cache");
-        let service = self.make.make(target.clone());
+        let service = self.make.new_service(target.clone());
         cache.insert(target.clone(), service.clone());
         future::ok(service.into())
     }

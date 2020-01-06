@@ -15,7 +15,7 @@ use super::requests::Requests;
 use super::{GetRoutes, OverrideDestination, Route, Routes, WithRoute};
 use futures::{try_ready, Async, Future, Poll, Stream};
 use linkerd2_error::Error;
-use linkerd2_stack::{proxy, Make};
+use linkerd2_stack::{proxy, NewService};
 use rand::{rngs::SmallRng, SeedableRng};
 use tokio::sync::watch;
 use tracing::{debug, trace};
@@ -55,7 +55,7 @@ struct Inner<T, R, CMake, O> {
 pub struct Service<T, R, C>
 where
     T: WithRoute,
-    R: Make<T::Route>,
+    R: NewService<T::Route>,
 {
     profiles: Option<watch::Receiver<Routes>>,
     requests: Requests<T, R>,
@@ -115,7 +115,7 @@ impl<T, G, R, C> tower::Service<T> for MakeSvc<G, R, C, ()>
 where
     T: WithRoute + Clone,
     G: GetRoutes<T>,
-    R: Make<T::Route> + Clone,
+    R: NewService<T::Route> + Clone,
     C: Clone,
 {
     type Response = Service<T, R, Forward<C>>;
@@ -146,7 +146,7 @@ impl<T, G, R, C> tower::Service<T> for MakeSvc<G, R, C, SmallRng>
 where
     T: WithRoute + Clone,
     G: GetRoutes<T>,
-    R: Make<T::Route> + Clone,
+    R: NewService<T::Route> + Clone,
     C: Clone,
 {
     type Response = Service<T, R, Override<C>>;
@@ -177,7 +177,7 @@ impl<T, F, R, C> Future for MakeFuture<T, F, R, C, ()>
 where
     T: WithRoute + Clone,
     F: Future<Item = Option<watch::Receiver<Routes>>>,
-    R: Make<T::Route>,
+    R: NewService<T::Route>,
 {
     type Item = Service<T, R, Forward<C>>;
     type Error = F::Error;
@@ -210,7 +210,7 @@ impl<T, F, R, C> Future for MakeFuture<T, F, R, C, SmallRng>
 where
     T: WithRoute + Clone,
     F: Future<Item = Option<watch::Receiver<Routes>>>,
-    R: Make<T::Route> + Clone,
+    R: NewService<T::Route> + Clone,
 {
     type Item = Service<T, R, Override<C>>;
     type Error = F::Error;
@@ -249,7 +249,7 @@ mod sealed {
 impl<T, R, C> sealed::PollUpdate for Service<T, R, Override<C>>
 where
     T: WithRoute + Clone,
-    R: Make<T::Route>,
+    R: NewService<T::Route>,
 {
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
@@ -285,7 +285,7 @@ where
 impl<T, R, C> sealed::PollUpdate for Service<T, R, Forward<C>>
 where
     T: WithRoute + Clone,
-    R: Make<T::Route>,
+    R: NewService<T::Route>,
 {
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
@@ -308,7 +308,7 @@ impl<U, T, R, C> tower::Service<U> for Service<T, R, C>
 where
     Self: sealed::PollUpdate,
     T: WithRoute + Clone,
-    R: Make<T::Route> + Clone,
+    R: NewService<T::Route> + Clone,
     C: tower::Service<U>,
     Requests<T, R>: Clone,
 {

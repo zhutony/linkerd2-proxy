@@ -149,7 +149,7 @@ pub mod target {
     /// Wraps an HTTP `Service` so that the Stack's `T -typed target` is cloned into
     /// each request's extensions.
     #[derive(Clone, Debug)]
-    pub struct Make<M>(M);
+    pub struct NewService<M>(M);
 
     pub struct MakeFuture<F, T> {
         inner: F,
@@ -158,26 +158,26 @@ pub mod target {
 
     // === impl Layer ===
 
-    pub fn layer<M>() -> impl layer::Layer<M, Service = Make<M>> + Copy {
-        layer::mk(Make)
+    pub fn layer<M>() -> impl layer::Layer<M, Service = NewService<M>> + Copy {
+        layer::mk(NewService)
     }
 
     // === impl Stack ===
 
-    impl<T, M> stack::Make<T> for Make<M>
+    impl<T, M> stack::NewService<T> for NewService<M>
     where
         T: Clone + Send + Sync + 'static,
-        M: stack::Make<T>,
+        M: stack::NewService<T>,
     {
         type Service = Insert<M::Service, super::ValLazy<T>, T>;
 
-        fn make(&self, target: T) -> Self::Service {
-            let inner = self.0.make(target.clone());
+        fn new_service(&self, target: T) -> Self::Service {
+            let inner = self.0.new_service(target.clone());
             super::Insert::new(inner, super::ValLazy(target))
         }
     }
 
-    impl<T, M> tower::Service<T> for Make<M>
+    impl<T, M> tower::Service<T> for NewService<M>
     where
         T: Clone + Send + Sync + 'static,
         M: tower::Service<T>,

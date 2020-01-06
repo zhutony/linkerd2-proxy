@@ -203,7 +203,7 @@ pub mod layer {
     use super::GetSpan;
     use futures::{future, Async, Future, Poll};
     use linkerd2_error::Error;
-    use linkerd2_stack::{Make, Proxy};
+    use linkerd2_stack::{NewService, Proxy};
     use tracing::{info_span, trace, Span};
     use tracing_futures::{Instrument, Instrumented};
 
@@ -253,23 +253,24 @@ pub mod layer {
         }
     }
 
-    impl<T, G, M> Make<T> for MakeSpan<G, M>
+    impl<T, G, N> NewService<T> for MakeSpan<G, N>
     where
         T: std::fmt::Debug,
         G: GetSpan<T>,
-        M: Make<T>,
+        N: NewService<T>,
     {
-        type Service = SetSpan<M::Service>;
+        type Service = SetSpan<N::Service>;
 
-        fn make(&self, target: T) -> Self::Service {
+        fn new_service(&self, target: T) -> Self::Service {
+            trace!(?target, "new_service");
+
             let span = self.get_span.get_span(&target);
-            let _enter = span.enter();
+            let inner = {
+                let _enter = span.enter();
+                self.make.new_service(target)
+            };
 
-            trace!("make");
-            SetSpan {
-                inner: self.make.make(target),
-                span: span.clone(),
-            }
+            SetSpan { inner, span }
         }
     }
 
@@ -285,7 +286,7 @@ pub mod layer {
         type Future = SetSpan<M::Future>;
 
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-            let span = info_span!("make");
+            let span = info_span!("make_service");
             let _enter = span.enter();
 
             trace!("poll_ready");
@@ -303,15 +304,15 @@ pub mod layer {
         }
 
         fn call(&mut self, target: T) -> Self::Future {
-            info_span!("make").in_scope(|| trace!("call"));
+            info_span!("make_service").in_scope(|| trace!(?target, "call"));
 
             let span = self.get_span.get_span(&target);
-            let _enter = span.enter();
+            let inner = {
+                let _enter = span.enter();
+                self.make.call(target)
+            };
 
-            SetSpan {
-                inner: self.make.call(target),
-                span: span.clone(),
-            }
+            SetSpan { inner, span }
         }
     }
 

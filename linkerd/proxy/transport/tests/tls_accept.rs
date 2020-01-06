@@ -17,7 +17,7 @@ use linkerd2_proxy_transport::tls::{
 use linkerd2_proxy_transport::{connect, Bind, Listen};
 use std::{net::SocketAddr, sync::mpsc};
 use tokio::{self, io, prelude::*};
-use tower::{layer::Layer, Service, ServiceExt};
+use tower::{layer::Layer, ServiceExt};
 use tower_util::service_fn;
 
 #[test]
@@ -173,9 +173,8 @@ where
 
         let peer_identity = Some(client_target_name.clone());
         let client = tls::client::layer(client_tls)
-            .layer(connect::svc(None))
-            .ready()
-            .and_then(move |mut svc| svc.call(Target(server_addr, client_target_name)))
+            .layer(connect::Connect::new(None))
+            .oneshot(Target(server_addr, client_target_name))
             .map_err(move |e| {
                 sender_clone
                     .send(Transported {
@@ -298,8 +297,8 @@ impl<A: Accept<ServerConnection> + Clone> Future for Server<A> {
     }
 }
 
-impl connect::HasPeerAddr for Target {
-    fn peer_addr(&self) -> SocketAddr {
+impl connect::ConnectAddr for Target {
+    fn connect_addr(&self) -> SocketAddr {
         self.0
     }
 }

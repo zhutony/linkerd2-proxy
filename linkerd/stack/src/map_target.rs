@@ -33,15 +33,15 @@ impl<S, M: Clone> tower::layer::Layer<S> for Layer<M> {
     }
 }
 
-impl<T, S, M> super::Make<T> for Stack<S, M>
+impl<T, S, M> super::NewService<T> for Stack<S, M>
 where
-    S: super::Make<M::Target>,
+    S: super::NewService<M::Target>,
     M: MapTarget<T>,
 {
     type Service = S::Service;
 
-    fn make(&self, target: T) -> Self::Service {
-        self.inner.make(self.map_target.map_target(target))
+    fn new_service(&self, target: T) -> Self::Service {
+        self.inner.new_service(self.map_target.map_target(target))
     }
 }
 

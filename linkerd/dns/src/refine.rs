@@ -1,6 +1,6 @@
 use futures::{future, try_ready, Future, Poll};
 use linkerd2_dns_name::Name;
-use linkerd2_stack::Make;
+use linkerd2_stack::NewService;
 use std::convert::TryFrom;
 use std::time::Instant;
 use trust_dns_resolver::{error::ResolveError, lookup_ip::LookupIp, AsyncResolver};
@@ -23,10 +23,10 @@ enum State {
 #[derive(Debug)]
 pub struct RefineError(ResolveError);
 
-impl Make<Name> for MakeRefine {
+impl NewService<Name> for MakeRefine {
     type Service = Refine;
 
-    fn make(&self, name: Name) -> Self::Service {
+    fn new_service(&self, name: Name) -> Self::Service {
         Refine {
             name,
             state: State::Init,
