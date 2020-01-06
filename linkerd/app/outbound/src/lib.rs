@@ -270,28 +270,23 @@ impl<A: OrigDstAddr> Config<A> {
                 .into_inner();
 
             // Routes requests to their logical target.
-            let http_logical_router = {
-                // Routes `Logical` targets to `Profile` stacks.
-                let profile_router = http_profile_cache
-
-                svc::stack(profile_router)
-                    // Sets the canonical-dst header on all outbound requests.
-                    .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
-                    // Strip headers that may be set by this proxy.
-                    .push(http::canonicalize::Layer::new(
-                        dns_refine_cache,
-                        canonicalize_timeout,
-                    ))
-                    .push_per_make(
-                        // Strip headers that may be set by this proxy.
-                        svc::layers()
-                            .push(http::strip_header::request::layer(L5D_CLIENT_ID))
-                            .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
-                    )
-                    .push(trace::layer(
-                        |logical: &Logical| info_span!("logical", addr = %logical.dst),
-                    ))
-            };
+            let http_logical_router = svc::stack(http_logical_profile_cache)
+                // Sets the canonical-dst header on all outbound requests.
+                .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
+                // Strips headers that may be set by this proxy.
+                .push(http::canonicalize::Layer::new(
+                    dns_refine_cache,
+                    canonicalize_timeout,
+                ))
+                .push_per_make(
+                    // Strips headers that may be set by this proxy.
+                    svc::layers()
+                        .push(http::strip_header::request::layer(L5D_CLIENT_ID))
+                        .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                )
+                .push(trace::layer(
+                    |logical: &Logical| info_span!("logical", addr = %logical.dst),
+                ));
 
             // Caches clients that bypass discovery/balancing.
             //
