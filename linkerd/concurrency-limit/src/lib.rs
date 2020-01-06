@@ -1,5 +1,9 @@
-//! Modified from tower-concurrency limit to share a sempahore across all
-//! service instances.
+//! A layer that limits the number of in-flight requests to inner service.
+//!
+//! Modified from tower-concurrency-limit so that the Layer holds a semaphore
+//! and, therefore, so that the limit applies across all services created by this layer..
+
+#![deny(warnings, rust_2018_idioms)]
 
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
@@ -13,8 +17,7 @@ pub struct Layer {
     semaphore: Arc<Semaphore>,
 }
 
-/// Enforces a limit on the concurrent number of requests the underlying
-/// service can handle.
+/// Enforces a limit on the number of concurrent requests to the inner service.
 #[derive(Debug)]
 pub struct ConcurrencyLimit<T> {
     inner: T,
@@ -34,10 +37,15 @@ pub struct ResponseFuture<T> {
     semaphore: Arc<Semaphore>,
 }
 
+impl From<Arc<Semaphore>> for Layer {
+    fn from(semaphore: Arc<Semaphore>) -> Self {
+        Self { semaphore }
+    }
+}
+
 impl Layer {
     pub fn new(max: usize) -> Self {
-        let semaphore = Arc::new(Semaphore::new(max));
-        Layer { semaphore }
+        Arc::new(Semaphore::new(max)).into()
     }
 }
 
