@@ -14,22 +14,22 @@ use tower::ServiceExt;
 use tracing::{debug, info_span, trace};
 use tracing_futures::Instrument;
 
-/// Configurs an HTTP client that uses a `C`-typed connector
+/// Configures an HTTP client that uses a `C`-typed connector
 ///
 /// The `span` is used for diagnostics (logging, mostly).
 #[derive(Debug)]
-pub struct Layer<T, B> {
+pub struct Layer<B> {
     h2_settings: crate::h2::Settings,
-    _p: PhantomData<fn(T) -> B>,
+    _marker: PhantomData<fn() -> B>,
 }
 
 type HyperMakeClient<C, T, B> = hyper::Client<HyperConnect<C, T>, B>;
 
 /// A `MakeService` that can speak either HTTP/1 or HTTP/2.
-pub struct MakeClient<C, T, B> {
+pub struct MakeClient<C, B> {
     connect: C,
     h2_settings: crate::h2::Settings,
-    _p: PhantomData<fn(T) -> B>,
+    _marker: PhantomData<fn() -> B>,
 }
 
 /// A `Future` returned from `Client::new_service()`.
@@ -65,47 +65,46 @@ pub enum ClientFuture {
 
 // === impl Layer ===
 
-pub fn layer<T, B>(h2_settings: crate::h2::Settings) -> Layer<T, B>
+pub fn layer<B>(h2_settings: crate::h2::Settings) -> Layer<B>
 where
     B: hyper::body::Payload + Send + 'static,
 {
     Layer {
         h2_settings,
-        _p: PhantomData,
+        _marker: PhantomData,
     }
 }
 
-impl<T, B> Clone for Layer<T, B>
+impl<B> Clone for Layer<B>
 where
     B: hyper::body::Payload + Send + 'static,
 {
     fn clone(&self) -> Self {
         Self {
             h2_settings: self.h2_settings,
-            _p: PhantomData,
+            _marker: self._marker,
         }
     }
 }
 
-impl<T, C, B> tower::layer::Layer<C> for Layer<T, B>
+impl<C, B> tower::layer::Layer<C> for Layer<B>
 where
-    MakeClient<C, T, B>: tower::Service<T>,
     B: hyper::body::Payload + Send + 'static,
 {
-    type Service = MakeClient<C, T, B>;
+    type Service = MakeClient<C, B>;
 
     fn layer(&self, connect: C) -> Self::Service {
         MakeClient {
             connect,
             h2_settings: self.h2_settings,
-            _p: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
 
 // === impl Client ===
 
-impl<C, T, B> tower::Service<T> for MakeClient<C, T, B>
+impl<C, T, B> tower::Service<T> for MakeClient<C, B>
 where
     C: tower::MakeConnection<T> + Clone + Send + Sync + 'static,
     C::Future: Send + 'static,
@@ -122,11 +121,10 @@ where
         Ok(().into())
     }
 
-    fn call(&mut self, config: T) -> Self::Future {
-        debug!("building client={:?}", config);
-
+    fn call(&mut self, target: T) -> Self::Future {
+        trace!("Building HTTP client");
         let connect = self.connect.clone();
-        match *config.http_settings() {
+        match *target.http_settings() {
             Settings::Http1 {
                 keep_alive,
                 wants_h1_upgrade: _,
@@ -140,23 +138,23 @@ where
                     // hyper should never try to automatically set the Host
                     // header, instead always just passing whatever we received.
                     .set_host(false)
-                    .build(HyperConnect::new(connect, config, was_absolute_form));
+                    .build(HyperConnect::new(connect, target, was_absolute_form));
                 MakeFuture::Http1(Some(h1))
             }
             Settings::Http2 => {
-                let h2 = h2::Connect::new(connect, self.h2_settings.clone()).oneshot(config);
+                let h2 = h2::Connect::new(connect, self.h2_settings.clone()).oneshot(target);
                 MakeFuture::Http2(h2)
             }
         }
     }
 }
 
-impl<C: Clone, T, B> Clone for MakeClient<C, T, B> {
+impl<C: Clone, B> Clone for MakeClient<C, B> {
     fn clone(&self) -> Self {
         Self {
             connect: self.connect.clone(),
             h2_settings: self.h2_settings,
-            _p: PhantomData,
+            _marker: self._marker,
         }
     }
 }
@@ -210,12 +208,12 @@ where
 
     fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
         debug!(
-            "client request: method={} uri={} version={:?} headers={:?}",
-            req.method(),
-            req.uri(),
-            req.version(),
-            req.headers()
+            method = %req.method(),
+            uri = %req.uri(),
+            version = ?req.version(),
+            headers = ?req.headers(),
         );
+
         match *self {
             Client::Http1(ref h1) => {
                 let upgrade = req.extensions_mut().remove::<Http11Upgrade>();
