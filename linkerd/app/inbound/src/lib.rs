@@ -188,23 +188,22 @@ impl<A: OrigDstAddr> Config<A> {
 
             let http_server = svc::stack(http_profile_cache)
                 .serves::<Target>()
-                .push_make_ready()
                 .push(normalize_uri::layer())
+                .push_make_ready()
+                .push_timeout(service_acquisition_timeout)
                 .push_per_make(
-                    svc::layers()
-                        .push_ready_timeout(service_acquisition_timeout)
-                        .push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
+                    svc::layers().push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
                 .push(trace::layer(|t: &Target| match t.http_settings {
                     http::Settings::Http2 => match t.dst_name.as_ref() {
                         None => info_span!(
                             "http2",
-                            target.port = %t.addr.port(),
+                            port = %t.addr.port(),
                         ),
                         Some(name) => info_span!(
                             "http2",
                             %name,
-                            target.port = %t.addr.port(),
+                            port = %t.addr.port(),
                         ),
                     },
                     http::Settings::Http1 {

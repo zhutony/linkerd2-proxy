@@ -83,9 +83,7 @@ where
                 }
                 MakeReadyFuture::Ready(ref mut fut) => {
                     let ready = fut.poll().map_err(Into::into)?;
-                    if ready.is_ready() {
-                        trace!("ready");
-                    }
+                    trace!(ready = ready.is_ready());
                     return Ok(ready);
                 }
             }

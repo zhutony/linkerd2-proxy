@@ -15,6 +15,7 @@ pub struct Config {
     pub get_suffixes: IndexSet<dns::Suffix>,
     pub get_networks: IndexSet<ipnet::IpNet>,
     pub profile_suffixes: IndexSet<dns::Suffix>,
+    pub initial_profile_timeout: Duration,
 }
 
 /// Handles to destination service clients.
@@ -43,11 +44,10 @@ impl Config {
             self.control.connect.backoff,
         );
 
-        const DUMB_INITIAL_TIMEOUT: Duration = Duration::from_secs(2);
         let profiles = profiles::Client::new(
             svc,
             resolve::BackoffUnlessInvalidArgument::from(self.control.connect.backoff),
-            DUMB_INITIAL_TIMEOUT,
+            self.initial_profile_timeout,
             self.context,
             self.profile_suffixes,
         );
