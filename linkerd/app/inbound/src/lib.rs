@@ -17,7 +17,7 @@ use linkerd2_app_core::{
     proxy::{
         self,
         http::{
-            self, client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
+            client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
             strip_header,
         },
         identity,
@@ -191,43 +191,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(normalize_uri::layer())
                 .push_make_ready()
                 .push_timeout(service_acquisition_timeout)
-                .push_per_make(
-                    svc::layers().push(strip_header::request::layer(DST_OVERRIDE_HEADER)),
-                )
-                .push(trace::layer(|t: &Target| match t.http_settings {
-                    http::Settings::Http2 => match t.dst_name.as_ref() {
-                        None => info_span!(
-                            "http2",
-                            port = %t.addr.port(),
-                        ),
-                        Some(name) => info_span!(
-                            "http2",
-                            %name,
-                            port = %t.addr.port(),
-                        ),
-                    },
-                    http::Settings::Http1 {
-                        keep_alive,
-                        wants_h1_upgrade,
-                        was_absolute_form,
-                    } => match t.dst_name.as_ref() {
-                        None => info_span!(
-                            "http1",
-                            port = %t.addr.port(),
-                            keep_alive,
-                            wants_h1_upgrade,
-                            was_absolute_form,
-                        ),
-                        Some(name) => info_span!(
-                            "http1",
-                            %name,
-                            port = %t.addr.port(),
-                            keep_alive,
-                            wants_h1_upgrade,
-                            was_absolute_form,
-                        ),
-                    },
-                }))
+                .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
+                .push(trace::layer(()))
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
                 .push_per_make(http_strip_headers)
@@ -255,7 +220,7 @@ impl<A: OrigDstAddr> Config<A> {
             let accept = tls::AcceptTls::new(local_identity, tcp_server)
                 .with_skip_ports(disable_protocol_detection_for_ports);
 
-            info!(listen.addr = %listen.listen_addr(), "serving");
+            info!(listen.addr = %listen.listen_addr(), "Serving");
             serve::serve(listen, accept, drain)
         }));
 

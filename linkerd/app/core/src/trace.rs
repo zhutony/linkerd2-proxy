@@ -181,6 +181,12 @@ where
     }
 }
 
+impl<T: GetSpan<()>> GetSpan<T> for () {
+    fn get_span(&self, t: &T) -> tracing::Span {
+        t.get_span(&())
+    }
+}
+
 impl<T> GetSpan<T> for tracing::Span {
     fn get_span(&self, _: &T) -> tracing::Span {
         self.clone()

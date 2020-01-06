@@ -6,7 +6,7 @@ use linkerd2_app_core::{
         http::{self, profiles},
         identity, tap,
     },
-    router,
+    router, trace,
     transport::{connect, tls},
     Addr, Conditional, NameAddr, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER,
 };
@@ -222,6 +222,47 @@ impl tap::Inspect for Target {
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.addr.fmt(f)
+    }
+}
+
+impl trace::GetSpan<()> for Target {
+    fn get_span(&self, _: &()) -> tracing::Span {
+        use tracing::info_span;
+
+        match self.http_settings {
+            http::Settings::Http2 => match self.dst_name.as_ref() {
+                None => info_span!(
+                    "http2",
+                    port = %self.addr.port(),
+                ),
+                Some(name) => info_span!(
+                    "http2",
+                    %name,
+                    port = %self.addr.port(),
+                ),
+            },
+            http::Settings::Http1 {
+                keep_alive,
+                wants_h1_upgrade,
+                was_absolute_form,
+            } => match self.dst_name.as_ref() {
+                None => info_span!(
+                    "http1",
+                    port = %self.addr.port(),
+                    keep_alive,
+                    wants_h1_upgrade,
+                    was_absolute_form,
+                ),
+                Some(name) => info_span!(
+                    "http1",
+                    %name,
+                    port = %self.addr.port(),
+                    keep_alive,
+                    wants_h1_upgrade,
+                    was_absolute_form,
+                ),
+            },
+        }
     }
 }
 
