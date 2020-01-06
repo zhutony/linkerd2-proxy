@@ -109,16 +109,15 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(svc::layer::mk(tcp::Forward::new));
 
+            // Caches HTTP clients for each inbound port & HTTP settings.
             let http_endpoint_cache = tcp_connect
                 .push(client::layer(connect.h2_settings))
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
-                .serves::<HttpEndpoint>()
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
-                .makes::<HttpEndpoint>()
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|ep: &HttpEndpoint| {
                     info_span!(
@@ -126,10 +125,13 @@ impl<A: OrigDstAddr> Config<A> {
                         port = %ep.port,
                         http = ?ep.settings,
                     )
-                }));
+                }))
+                .serves::<HttpEndpoint>();
 
             let http_target_observability = svc::layers()
+                // Registers the stack to be tapped.
                 .push(tap_layer)
+                // Records metrics for each `Target`.
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_endpoint,
                 ))
@@ -140,59 +142,88 @@ impl<A: OrigDstAddr> Config<A> {
                 ));
 
             let http_profile_route_proxy = svc::stack(())
+                // Sets the route as a request extension so that it can be used
+                // by tap.
                 .push(insert::target::layer())
+                // Records per-route metrics.
                 .push(http_metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
+                // Sets the per-route response classifier as a request
+                // extension.
                 .push(classify::layer())
                 .makes_clone::<dst::Route>();
 
-            // Determine the target for each request, obtain a profile route for
-            // that target, and dispatch the request to it.
+            // Routes targets to a Profile stack, i.e. so that profile
+            // resolutions are shared even as the type of request may vary.
             let http_profile_cache = http_endpoint_cache
                 .serves::<HttpEndpoint>()
                 .push(svc::map_target::layer(HttpEndpoint::from))
                 .push(http_target_observability)
                 .serves::<Target>()
+                // Provides route configuration without pdestination overrides.
                 .push(profiles::Layer::without_overrides(
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
                 .push_per_make(svc::lock::Layer::new())
+                // Caches profile stacks.
                 .makes_clone::<Profile>()
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
                 .serves::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
+                .routes::<(), Target>()
                 .make(());
 
-            let http_admit_request = svc::layers()
-                .push(svc::layer::mk(orig_proto::Downgrade::new))
-                .push_oneshot()
-                .push_concurrency_limit(max_in_flight_requests)
-                .push_load_shed()
-                // Synthesizes responses for proxy errors.
-                .push(errors::layer());
-
+            // Strips headers that may be set by the inbound router.
             let http_strip_headers = svc::layers()
                 .push(strip_header::request::layer(L5D_REMOTE_IP))
                 .push(strip_header::request::layer(L5D_CLIENT_ID))
                 .push(strip_header::response::layer(L5D_SERVER_ID));
 
+            // Handles requests as they are initially received by the proxy.
+            let http_admit_request = svc::layers()
+                // Downgrades the protocol if upgraded by an outbound proxy.
+                .push(svc::layer::mk(orig_proto::Downgrade::new))
+                // Ensures that load is not shed if the inner service is in-use.
+                .push_oneshot()
+                // Limits the number of in-flight requests.
+                .push_concurrency_limit(max_in_flight_requests)
+                // Sheds load if too many requests are in flight.
+                //
+                // XXX Can this be removed? Is it okay to just backpressure onto
+                // the client? Should we instead limit the number of active
+                // connections?
+                .push_load_shed()
+                // Synthesizes responses for proxy errors.
+                .push(errors::layer());
+
             let http_server_observability = svc::layers()
                 .push(trace_context::layer(span_sink.map(|span_sink| {
                     SpanConverter::server(span_sink, trace_labels())
                 })))
+                // Tracks proxy handletime.
                 .push(metrics.http_handle_time.layer());
 
             let http_server = svc::stack(http_profile_cache)
                 .serves::<Target>()
+                // Normalizes the URI, i.e. if it was originally in
+                // absolute-form on the outbound side.
                 .push(normalize_uri::layer())
+                // Ensures that the built service is ready before it is returned
+                // to the router to dispatch a request.
                 .push_make_ready()
+                // Limits the amount of time each request waits to obtain a
+                // ready service.
                 .push_timeout(service_acquisition_timeout)
+                // Removes the override header after it has been used to
+                // determine a reuquest target.
                 .push_per_make(strip_header::request::layer(DST_OVERRIDE_HEADER))
-                .push(trace::layer(()))
+                // Routes each request to a target, obtains a service for that
+                // target, and dispatches the request.
+                .push(trace::Layer::from_target())
                 .push(router::Layer::new(RequestTarget::from))
                 .makes::<tls::accept::Meta>()
                 .push_per_make(http_strip_headers)

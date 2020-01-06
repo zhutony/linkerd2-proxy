@@ -129,7 +129,8 @@ impl<A: OrigDstAddr> Config<A> {
                 }))
                 .push(svc::layer::mk(tcp::Forward::new));
 
-            // Registers the stack with Tap, Metrics, and OpenCensus tracing export.
+            // Registers the stack with Tap, Metrics, and OpenCensus tracing
+            // export.
             let http_endpoint_observability = svc::layers()
                 .push(tap_layer.clone())
                 .push(http::metrics::layer::<_, classify::Response>(
@@ -159,76 +160,97 @@ impl<A: OrigDstAddr> Config<A> {
                 // communicating with other proxies); though HTTP/1.x fallback
                 // is supported as needed.
                 .push(http::client::layer(connect.h2_settings))
-                // Reestablishes a connection when the client fails.
+                // Re-establishes a connection when the client fails.
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
                     move |_| Ok(backoff.stream())
                 }))
                 .push(http_endpoint_observability.clone())
                 .push(http_endpoint_identity_headers.clone())
+                // Ensures that the request's URI is in the proper form.
+                .push(http::normalize_uri::layer())
                 // Upgrades HTTP/1 requests to be transported over HTTP/2
                 // connections.
                 //
                 // This sets headers so that the inbound proxy can downgrade the
                 // request properly.
                 .push(orig_proto_upgrade::layer())
-                .serves::<HttpEndpoint>()
                 .push(trace::layer(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }))
-                .serves::<HttpEndpoint>();
+                }));
 
-            // Resolves each target via the control plane, producing a over all
-            // endpoints returned from the destination service.
+            // Resolves each target via the control plane on a background task,
+            // buffering results.
             //
-            // This
+            // This buffer controls how many discovery updates may be
+            // pending/unconsumed by the balancer before backpressure is applied
+            // on the resolution stream. If the buffer is full for
+            // `cache_max_idle_age`, then the resolution task fails.
             let discover = {
                 const BUFFER_CAPACITY: usize = 10;
                 let resolve = map_endpoint::Resolve::new(endpoint::FromMetadata, resolve.clone());
                 discover::Layer::new(BUFFER_CAPACITY, cache_max_idle_age, resolve)
             };
 
-            // If the balancer fails to be created, i.e., because it is unresolvable,
-            // fall back to using a router that dispatches request to the
-            // application-selected original destination.
+            // If the balancer fails to be created, i.e., because it is
+            // unresolvable, fall back to using a router that dispatches request
+            // to the application-selected original destination.
+
+            // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_balancer_endpoint
                 .push_spawn_ready()
                 .push(discover)
                 .push_per_make(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .serves::<Concrete>()
                 .push_pending()
+                // Shares the balancer, ensuring discovery errors are propagated.
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(
                     |c: &Concrete| info_span!("balance", addr = %c.dst),
-                ))
-                .serves::<Concrete>();
+                ));
 
             let http_profile_route_proxy = svc::stack(())
+                // Records metrics within retries.
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route_retry.clone(),
                 ))
-                .makes_clone::<dst::Route>()
+                // Sets an optional retry policy.
                 .push(http::retry::layer(metrics.http_route_retry))
-                .makes::<dst::Route>()
+                // Sets an optional request timeout.
                 .push(http::timeout::layer())
+                // Records per-route metrics.
                 .push(http::metrics::layer::<_, classify::Response>(
                     metrics.http_route,
                 ))
-                .push(classify::layer());
+                // Sets the per-route response classifier as a request
+                // extension.
+                .push(classify::layer())
+                .makes_clone::<dst::Route>();
 
-            let http_profile_cache = http_balancer_cache
+            // Routes `Logical` targets to a cached `Profile` stack, i.e. so
+            // that profile resolutions are shared even as the type of request
+            // may vary.
+            let http_logical_profile_cache = http_balancer_cache
                 .serves::<Concrete>()
+                // Provides route configuration. The profile service operates
+                // over `Concret` services. When overrides are in play, the
+                // Concrete destination may be overridden.
                 .push(http::profiles::Layer::with_overrides(
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
-                .push_pending()
+                // Use the `Logical` target as a `Concrete` target. It may be
+                // overridden by the profile layer.
                 .push_per_make(svc::map_target::layer(Concrete::from))
+                .push_pending()
                 .push_per_make(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|_: &Profile| info_span!("profile")))
-                .serves::<Profile>();
+                .serves::<Profile>()
+                .push(router::Layer::new(|()| ProfileTarget))
+                .routes::<(), Logical>()
+                .make(());
 
             // Caches DNS refinements from relative names to canonical names.
             //
@@ -247,21 +269,21 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves_rsp::<dns::Name, dns::Name>()
                 .into_inner();
 
+            // Routes requests to their logical target.
             let http_logical_router = {
+                // Routes `Logical` targets to `Profile` stacks.
                 let profile_router = http_profile_cache
-                    .push(router::Layer::new(|()| ProfileTarget))
-                    .routes::<(), Logical>()
-                    .make(());
 
                 svc::stack(profile_router)
-                    .serves::<Logical>()
-                    .push(http::normalize_uri::layer())
+                    // Sets the canonical-dst header on all outbound requests.
                     .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
+                    // Strip headers that may be set by this proxy.
                     .push(http::canonicalize::Layer::new(
                         dns_refine_cache,
                         canonicalize_timeout,
                     ))
                     .push_per_make(
+                        // Strip headers that may be set by this proxy.
                         svc::layers()
                             .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                             .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
@@ -269,7 +291,6 @@ impl<A: OrigDstAddr> Config<A> {
                     .push(trace::layer(
                         |logical: &Logical| info_span!("logical", addr = %logical.dst),
                     ))
-                    .serves::<Logical>()
             };
 
             // Caches clients that bypass discovery/balancing.
@@ -295,13 +316,23 @@ impl<A: OrigDstAddr> Config<A> {
                 .serves::<HttpEndpoint>();
 
             let http_admit_request = svc::layers()
+                // Ensures that load is not shed if the inner service is in-use.
                 .push_oneshot()
+                // Limits the number of in-flight requests.
                 .push_concurrency_limit(max_in_flight_requests)
+                // Sheds load if too many requests are in flight.
+                //
+                // XXX Can this be removed? Is it okay to just backpressure onto
+                // the client? Should we instead limit the number of active
+                // connections?
                 .push_load_shed()
+                // Synthesizes responses for proxy errors.
                 .push(errors::layer())
+                // Initiates OpenCensus tracing.
                 .push(trace_context::layer(span_sink.map(|span_sink| {
                     SpanConverter::server(span_sink, trace_labels())
                 })))
+                // Tracks proxy handletime.
                 .push(metrics.http_handle_time.layer());
 
             let http_server = http_logical_router

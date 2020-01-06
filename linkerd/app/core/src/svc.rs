@@ -1,8 +1,8 @@
 // Possibly unused, but useful during development.
 #![allow(dead_code)]
 
-use crate::proxy::{buffer, http, ready};
-use crate::{cache, Error};
+pub use crate::proxy::{buffer, ready};
+use crate::{cache, proxy::http, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
