@@ -118,12 +118,12 @@ impl<A: OrigDstAddr> Config<A> {
                 // Initiates mTLS if the target is configured with identity.
                 .push(tls::client::layer(local_identity))
                 // Limits the time we wait for a connection to be established.
-                .push_timeout(connect.timeout);
+                .push_timeout(connect.timeout)
+                .push(metrics.transport.layer_connect(TransportLabels));
 
             // Forwards TCP streams that cannot be decoded as HTTP.
             let tcp_forward = tcp_connect
                 .clone()
-                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(svc::map_target::layer(|meta: tls::accept::Meta| {
                     TcpEndpoint::from(meta.addrs.target_addr())
                 }))
@@ -154,7 +154,6 @@ impl<A: OrigDstAddr> Config<A> {
 
             let http_balancer_endpoint = tcp_connect
                 .clone()
-                .push(metrics.transport.layer_connect(TransportLabels))
                 // Initiates an HTTP client on the underlying transport.
                 // Prior-knowledge HTTP/2 is typically used (i.e. when
                 // communicating with other proxies); though HTTP/1.x fallback
@@ -279,7 +278,6 @@ impl<A: OrigDstAddr> Config<A> {
             // client layer captures the requst body type (via PhantomData), so
             // the stack cannot be shared directly.
             let http_forward_cache = tcp_connect
-                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(http::client::layer(connect.h2_settings))
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
@@ -292,7 +290,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_make(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push(trace::layer(|endpoint: &HttpEndpoint| {
-                    info_span!("bypass", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 }))
                 .serves::<HttpEndpoint>();
 

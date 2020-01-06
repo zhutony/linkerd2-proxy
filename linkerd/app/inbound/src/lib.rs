@@ -98,19 +98,18 @@ impl<A: OrigDstAddr> Config<A> {
             // TCP forwarding and HTTP proxying).
             let tcp_connect = svc::stack(connect::Connect::new(connect.keepalive))
                 .push_map_response(BoxedIo::new) // Ensures the transport propagates shutdown properly.
-                .push_timeout(connect.timeout);
+                .push_timeout(connect.timeout)
+                .push(metrics.transport.layer_connect(TransportLabels));
 
             // Forwards TCP streams that cannot be decoded as HTTP.
             let tcp_forward = tcp_connect
                 .clone()
-                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(svc::map_target::layer(|meta: tls::accept::Meta| {
                     TcpEndpoint::from(meta.addrs.target_addr())
                 }))
                 .push(svc::layer::mk(tcp::Forward::new));
 
             let http_endpoint_cache = tcp_connect
-                .push(metrics.transport.layer_connect(TransportLabels))
                 .push(client::layer(connect.h2_settings))
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
