@@ -6,7 +6,7 @@ use linkerd2_app_core::{
     classify,
     config::{ControlAddr, ControlConfig},
     control, dns, proxy, reconnect,
-    svc::{self, LayerExt, NewService},
+    svc::{self, NewService},
     transport::{connect, tls},
     ControlHttpMetricsRegistry as Metrics, Error, Never,
 };
@@ -56,7 +56,7 @@ impl Config {
                     .push(proxy::http::metrics::Layer::<_, classify::Response>::new(
                         metrics,
                     ))
-                    .push(proxy::grpc::req_body_as_payload::layer().per_service())
+                    .push_per_service(proxy::grpc::req_body_as_payload::layer())
                     .push(control::add_origin::Layer::new())
                     .push_pending()
                     .push_per_service(svc::lock::Layer::new())

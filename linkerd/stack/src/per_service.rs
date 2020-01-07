@@ -7,6 +7,7 @@ pub fn layer<L>(per_service: L) -> Layer<L> {
 #[derive(Clone, Debug)]
 pub struct Layer<L>(L);
 
+/// Applies `L`-typed layers to the results of an `M`-typed service factory.
 #[derive(Clone, Debug)]
 pub struct PerService<L, M> {
     inner: M,
@@ -18,7 +19,7 @@ pub struct MakeFuture<L, F> {
     layer: L,
 }
 
-impl<M, L: Clone> super::Layer<M> for Layer<L> {
+impl<M, L: Clone> tower::layer::Layer<M> for Layer<L> {
     type Service = PerService<L, M>;
 
     fn layer(&self, inner: M) -> Self::Service {
@@ -31,7 +32,7 @@ impl<M, L: Clone> super::Layer<M> for Layer<L> {
 
 impl<T, L, M> super::NewService<T> for PerService<L, M>
 where
-    L: super::Layer<M::Service>,
+    L: tower::layer::Layer<M::Service>,
     M: super::NewService<T>,
 {
     type Service = L::Service;
@@ -43,7 +44,7 @@ where
 
 impl<T, L, M> tower::Service<T> for PerService<L, M>
 where
-    L: super::Layer<M::Response> + Clone,
+    L: tower::layer::Layer<M::Response> + Clone,
     M: tower::Service<T>,
 {
     type Response = L::Service;
@@ -65,7 +66,7 @@ where
 
 impl<L, F> Future for MakeFuture<L, F>
 where
-    L: super::Layer<F::Item>,
+    L: tower::layer::Layer<F::Item>,
     F: Future,
 {
     type Item = L::Service;

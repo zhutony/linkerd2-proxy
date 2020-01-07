@@ -1,9 +1,8 @@
 use super::Error;
 use futures::{future, Async, Future, Poll};
-use linkerd2_stack as stk;
 use std::time::Duration;
 use tokio_timer::{clock, Delay};
-use tower_service::Service;
+use tower::Service;
 use tracing::{debug, trace};
 
 #[derive(Copy, Clone, Debug)]
@@ -25,7 +24,7 @@ impl Layer {
     }
 }
 
-impl<S> stk::Layer<S> for Layer {
+impl<S> tower::layer::Layer<S> for Layer {
     type Service = TimeoutReady<S>;
 
     fn layer(&self, inner: S) -> Self::Service {

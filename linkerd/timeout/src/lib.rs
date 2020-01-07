@@ -5,7 +5,6 @@ use linkerd2_stack::Proxy;
 use std::time::Duration;
 use tokio_connect::Connect;
 use tokio_timer as timer;
-use tower_service::Service;
 
 pub mod error;
 pub mod ready;
@@ -47,7 +46,7 @@ impl<T> Timeout<T> {
 impl<P, S, Req> Proxy<Req, S> for Timeout<P>
 where
     P: Proxy<Req, S>,
-    S: Service<P::Request>,
+    S: tower::Service<P::Request>,
 {
     type Request = P::Request;
     type Response = P::Response;
@@ -63,9 +62,9 @@ where
     }
 }
 
-impl<S, Req> Service<Req> for Timeout<S>
+impl<S, Req> tower::Service<Req> for Timeout<S>
 where
-    S: Service<Req>,
+    S: tower::Service<Req>,
     S::Error: Into<Error>,
 {
     type Response = S::Response;

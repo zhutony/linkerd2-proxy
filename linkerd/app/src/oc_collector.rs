@@ -3,7 +3,7 @@ use futures::{future, Future};
 use linkerd2_app_core::{
     config::{ControlAddr, ControlConfig},
     control, proxy, reconnect,
-    svc::{self, LayerExt, NewService},
+    svc::{self, NewService},
     transport::{connect, tls},
     Error,
 };
@@ -61,7 +61,7 @@ impl Config {
                         let backoff = control.connect.backoff;
                         move |_| Ok(backoff.stream())
                     }))
-                    .push(proxy::grpc::req_body_as_payload::layer().per_service())
+                    .push_per_service(proxy::grpc::req_body_as_payload::layer())
                     .push(control::add_origin::Layer::new())
                     .push_pending()
                     .push_per_service(svc::lock::Layer::new())

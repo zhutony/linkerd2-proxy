@@ -7,11 +7,12 @@ use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
     self as stack, layer, map_response, map_target, new_service, oneshot, pending, per_service,
-    Layer, LayerExt, NewService,
+    NewService,
 };
 pub use linkerd2_timeout as timeout;
 use std::time::Duration;
 use tower::layer::util::{Identity, Stack as Pair};
+pub use tower::layer::Layer;
 pub use tower::util::{Either, Oneshot};
 pub use tower::{service_fn as mk, MakeConnection, MakeService, Service, ServiceExt};
 use tower_spawn_ready::SpawnReadyLayer;

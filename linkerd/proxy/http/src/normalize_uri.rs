@@ -26,7 +26,7 @@ pub struct NormalizeUri<S> {
 
 // === impl Layer ===
 
-pub fn layer<M>() -> impl layer::Layer<M, Service = MakeNormalizeUri<M>> + Copy {
+pub fn layer<M>() -> impl tower::layer::Layer<M, Service = MakeNormalizeUri<M>> + Copy {
     layer::mk(|inner| MakeNormalizeUri { inner })
 }
 

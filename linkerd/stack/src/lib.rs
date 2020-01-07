@@ -9,8 +9,4 @@ pub mod pending;
 pub mod per_service;
 pub mod proxy;
 
-pub use self::{
-    layer::{Layer, LayerExt},
-    new_service::NewService,
-    proxy::Proxy,
-};
+pub use self::{new_service::NewService, proxy::Proxy};
