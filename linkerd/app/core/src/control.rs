@@ -16,7 +16,6 @@ impl fmt::Display for ControlAddr {
 /// Sets the request's URI from `Config`.
 pub mod add_origin {
     use super::ControlAddr;
-    use crate::svc;
     use futures::try_ready;
     use futures::{Future, Poll};
     use linkerd2_error::Error;
@@ -24,12 +23,12 @@ pub mod add_origin {
     use tower_request_modifier::{Builder, RequestModifier};
 
     #[derive(Debug)]
-    pub struct Layer<M, B> {
-        _marker: PhantomData<fn(B) -> M>,
+    pub struct Layer<B> {
+        _marker: PhantomData<fn(B)>,
     }
 
     #[derive(Debug)]
-    pub struct Stack<M, B> {
+    pub struct MakeAddOrigin<M, B> {
         inner: M,
         _marker: PhantomData<fn(B)>,
     }
@@ -42,10 +41,7 @@ pub mod add_origin {
 
     // === impl Layer ===
 
-    impl<M, B> Layer<M, B>
-    where
-        M: svc::Service<ControlAddr>,
-    {
+    impl<B> Layer<B> {
         pub fn new() -> Self {
             Layer {
                 _marker: PhantomData,
@@ -53,10 +49,7 @@ pub mod add_origin {
         }
     }
 
-    impl<M, B> Clone for Layer<M, B>
-    where
-        M: svc::Service<ControlAddr>,
-    {
+    impl<B> Clone for Layer<B> {
         fn clone(&self) -> Self {
             Self {
                 _marker: self._marker,
@@ -64,25 +57,22 @@ pub mod add_origin {
         }
     }
 
-    impl<M, B> svc::Layer<M> for Layer<M, B>
-    where
-        M: svc::Service<ControlAddr>,
-    {
-        type Service = Stack<M, B>;
+    impl<M, B> tower::layer::Layer<M> for Layer<B> {
+        type Service = MakeAddOrigin<M, B>;
 
         fn layer(&self, inner: M) -> Self::Service {
-            Stack {
+            Self::Service {
                 inner,
                 _marker: PhantomData,
             }
         }
     }
 
-    // === impl Stack ===
+    // === impl MakeAddOrigin ===
 
-    impl<M, B> svc::Service<ControlAddr> for Stack<M, B>
+    impl<M, B> tower::Service<ControlAddr> for MakeAddOrigin<M, B>
     where
-        M: svc::Service<ControlAddr>,
+        M: tower::Service<ControlAddr>,
         M::Error: Into<Error>,
     {
         type Response = RequestModifier<M::Response, B>;
@@ -104,9 +94,9 @@ pub mod add_origin {
         }
     }
 
-    impl<M, B> Clone for Stack<M, B>
+    impl<M, B> Clone for MakeAddOrigin<M, B>
     where
-        M: svc::Service<ControlAddr> + Clone,
+        M: tower::Service<ControlAddr> + Clone,
     {
         fn clone(&self) -> Self {
             Self {
@@ -172,14 +162,14 @@ pub mod resolve {
 
     pub struct Init<M>
     where
-        M: svc::Service<client::Target>,
+        M: tower::Service<client::Target>,
     {
         state: State<M>,
     }
 
     enum State<M>
     where
-        M: svc::Service<client::Target>,
+        M: tower::Service<client::Target>,
     {
         Resolve(dns::IpAddrFuture, Option<(M, ControlAddr)>),
         NotReady(M, Option<(SocketAddr, ControlAddr)>),
@@ -196,7 +186,7 @@ pub mod resolve {
 
     pub fn layer<M>(dns: dns::Resolver) -> impl svc::Layer<M, Service = Resolve<M>> + Clone
     where
-        M: svc::Service<client::Target> + Clone,
+        M: tower::Service<client::Target> + Clone,
     {
         svc::layer::mk(move |inner| Resolve {
             dns: dns.clone(),
@@ -206,9 +196,9 @@ pub mod resolve {
 
     // === impl Resolve ===
 
-    impl<M> svc::Service<ControlAddr> for Resolve<M>
+    impl<M> tower::Service<ControlAddr> for Resolve<M>
     where
-        M: svc::Service<client::Target> + Clone,
+        M: tower::Service<client::Target> + Clone,
     {
         type Response = M::Response;
         type Error = <Init<M> as Future>::Error;
@@ -241,7 +231,7 @@ pub mod resolve {
 
     impl<M> Future for Init<M>
     where
-        M: svc::Service<client::Target>,
+        M: tower::Service<client::Target>,
     {
         type Item = M::Response;
         type Error = Error<M::Error>;
@@ -268,7 +258,7 @@ pub mod resolve {
 
     impl<M> State<M>
     where
-        M: svc::Service<client::Target>,
+        M: tower::Service<client::Target>,
     {
         fn make_inner(addr: SocketAddr, dst: &ControlAddr, mk_svc: &mut M) -> Self {
             let target = client::Target {
@@ -332,7 +322,7 @@ pub mod client {
 
     pub fn layer<C, B>() -> impl svc::Layer<C, Service = Client<C, B>> + Copy
     where
-        http::h2::Connect<C, B>: svc::Service<Target>,
+        http::h2::Connect<C, B>: tower::Service<Target>,
     {
         svc::layer::mk(|mk_conn| {
             let inner = http::h2::Connect::new(mk_conn, H2Settings::default());
@@ -342,13 +332,13 @@ pub mod client {
 
     // === impl Client ===
 
-    impl<C, B> svc::Service<Target> for Client<C, B>
+    impl<C, B> tower::Service<Target> for Client<C, B>
     where
-        http::h2::Connect<C, B>: svc::Service<Target>,
+        http::h2::Connect<C, B>: tower::Service<Target>,
     {
-        type Response = <http::h2::Connect<C, B> as svc::Service<Target>>::Response;
-        type Error = <http::h2::Connect<C, B> as svc::Service<Target>>::Error;
-        type Future = <http::h2::Connect<C, B> as svc::Service<Target>>::Future;
+        type Response = <http::h2::Connect<C, B> as tower::Service<Target>>::Response;
+        type Error = <http::h2::Connect<C, B> as tower::Service<Target>>::Error;
+        type Future = <http::h2::Connect<C, B> as tower::Service<Target>>::Future;
 
         #[inline]
         fn poll_ready(&mut self) -> Poll<(), Self::Error> {

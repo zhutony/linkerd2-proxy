@@ -31,6 +31,20 @@ pub fn stack<S>(inner: S) -> Stack<S> {
     Stack(inner)
 }
 
+pub fn proxies() -> Stack<IdentityProxy> {
+    Stack(IdentityProxy(()))
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct IdentityProxy(());
+
+impl<T> NewService<T> for IdentityProxy {
+    type Service = ();
+    fn new_service(&self, _: T) -> Self::Service {
+        ()
+    }
+}
+
 impl<L> Layers<L> {
     pub fn push<O>(self, outer: O) -> Layers<Pair<L, O>> {
         Layers(Pair::new(self.0, outer))
@@ -107,7 +121,10 @@ impl<S> Stack<S> {
         Stack(layer.layer(self.0))
     }
 
-    pub fn push_map_target<M: Clone>(self, map_target: M) -> Stack<map_target::Stack<S, M>> {
+    pub fn push_map_target<M: Clone>(
+        self,
+        map_target: M,
+    ) -> Stack<map_target::MakeMapTarget<S, M>> {
         self.push(map_target::Layer::new(map_target))
     }
 

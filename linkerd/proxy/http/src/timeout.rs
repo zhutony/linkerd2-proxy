@@ -25,7 +25,7 @@ pub fn layer() -> Layer {
 pub struct Layer;
 
 #[derive(Clone, Debug)]
-pub struct Stack<M> {
+pub struct MakeTimeout<M> {
     inner: M,
 }
 
@@ -43,14 +43,14 @@ pub struct Timeout<T>(Inner<T>);
 pub struct ProxyTimedOut(());
 
 impl<M> tower::layer::Layer<M> for Layer {
-    type Service = Stack<M>;
+    type Service = MakeTimeout<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        Stack { inner }
+        MakeTimeout { inner }
     }
 }
 
-impl<T, M> NewService<T> for Stack<M>
+impl<T, M> NewService<T> for MakeTimeout<M>
 where
     M: NewService<T>,
     T: HasTimeout,
@@ -65,7 +65,7 @@ where
     }
 }
 
-impl<T, M> tower::Service<T> for Stack<M>
+impl<T, M> tower::Service<T> for MakeTimeout<M>
 where
     M: tower::Service<T>,
     T: HasTimeout,

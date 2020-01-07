@@ -10,7 +10,7 @@ pub trait MapTarget<T> {
 pub struct Layer<M>(M);
 
 #[derive(Clone, Debug)]
-pub struct Stack<S, M> {
+pub struct MakeMapTarget<S, M> {
     inner: S,
     map_target: M,
 }
@@ -22,17 +22,17 @@ impl<M> Layer<M> {
 }
 
 impl<S, M: Clone> tower::layer::Layer<S> for Layer<M> {
-    type Service = Stack<S, M>;
+    type Service = MakeMapTarget<S, M>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        Stack {
+        MakeMapTarget {
             inner,
             map_target: self.0.clone(),
         }
     }
 }
 
-impl<T, S, M> super::NewService<T> for Stack<S, M>
+impl<T, S, M> super::NewService<T> for MakeMapTarget<S, M>
 where
     S: super::NewService<M::Target>,
     M: MapTarget<T>,
@@ -44,7 +44,7 @@ where
     }
 }
 
-impl<T, S, M> tower::Service<T> for Stack<S, M>
+impl<T, S, M> tower::Service<T> for MakeMapTarget<S, M>
 where
     S: tower::Service<M::Target>,
     M: MapTarget<T>,

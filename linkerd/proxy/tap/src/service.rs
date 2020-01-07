@@ -15,12 +15,12 @@ pub struct Layer<R: Register> {
 
 /// Makes wrapped Services to record taps.
 #[derive(Clone, Debug)]
-pub struct Stack<R: Register, T> {
+pub struct MakeService<R: Register, T> {
     registry: R,
     inner: T,
 }
 
-/// Future returned by `Stack`.
+/// Future returned by `MakeService`.
 pub struct MakeFuture<F, R, T> {
     inner: F,
     next: Option<(R, T)>,
@@ -67,19 +67,19 @@ impl<R, M> tower::layer::Layer<M> for Layer<R>
 where
     R: Register + Clone,
 {
-    type Service = Stack<R, M>;
+    type Service = MakeService<R, M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        Stack {
+        MakeService {
             inner,
             registry: self.registry.clone(),
         }
     }
 }
 
-// === Stack ===
+// === MakeService ===
 
-impl<R, T, M> NewService<T> for Stack<R, M>
+impl<R, T, M> NewService<T> for MakeService<R, M>
 where
     T: Inspect + Clone,
     R: Register + Clone,
@@ -100,7 +100,7 @@ where
     }
 }
 
-impl<R, T, M> tower::Service<T> for Stack<R, M>
+impl<R, T, M> tower::Service<T> for MakeService<R, M>
 where
     T: Inspect + Clone,
     R: Register,

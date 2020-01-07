@@ -12,12 +12,7 @@ use tracing::{debug, error, warn};
 pub struct Layer;
 
 #[derive(Clone, Debug)]
-pub struct Stack<M> {
-    inner: M,
-}
-
-#[derive(Clone, Debug)]
-pub struct Service<S>(S);
+pub struct Errors<S>(S);
 
 #[derive(Debug)]
 pub struct ResponseFuture<F> {
@@ -32,14 +27,14 @@ pub struct StatusError {
 }
 
 impl<S> svc::Layer<S> for Layer {
-    type Service = Service<S>;
+    type Service = Errors<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        Service(inner)
+        Errors(inner)
     }
 }
 
-impl<S, B1, B2> svc::Service<Request<B1>> for Service<S>
+impl<S, B1, B2> svc::Service<Request<B1>> for Errors<S>
 where
     S: svc::Service<Request<B1>, Response = Response<B2>>,
     S::Error: Into<Error>,

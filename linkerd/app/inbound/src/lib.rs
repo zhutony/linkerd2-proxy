@@ -138,7 +138,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .map(|span_sink| SpanConverter::client(span_sink, trace_labels())),
                 ));
 
-            let http_profile_route_proxy = svc::stack(())
+            let http_profile_route_proxy = svc::proxies()
                 // Sets the route as a request extension so that it can be used
                 // by tap.
                 .push_http_insert_target()

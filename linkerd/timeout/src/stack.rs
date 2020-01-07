@@ -16,7 +16,7 @@ pub struct Layer {
 }
 
 #[derive(Clone, Debug)]
-pub struct Stack<M> {
+pub struct MakeService<M> {
     inner: M,
     timeout: Duration,
 }
@@ -27,17 +27,17 @@ pub struct MakeFuture<F> {
 }
 
 impl<M> tower::layer::Layer<M> for Layer {
-    type Service = Stack<M>;
+    type Service = MakeService<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        Stack {
+        MakeService {
             inner,
             timeout: self.timeout,
         }
     }
 }
 
-impl<T, M> tower::Service<T> for Stack<M>
+impl<T, M> tower::Service<T> for MakeService<M>
 where
     M: tower::Service<T>,
 {

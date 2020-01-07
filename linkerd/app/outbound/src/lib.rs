@@ -208,7 +208,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|c: &Concrete| info_span!("balance", addr = %c.dst));
 
-            let http_profile_route_proxy = svc::stack(())
+            let http_profile_route_proxy = svc::proxies()
                 // Records metrics within retries.
                 .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route_retry.clone(),

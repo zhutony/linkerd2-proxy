@@ -1,4 +1,3 @@
-use futures::{try_ready, Future, Poll};
 use http;
 use linkerd2_error::Error;
 use linkerd2_stack as svc;
@@ -61,13 +60,8 @@ pub trait CanClassify {
 pub struct Layer();
 
 #[derive(Clone, Debug)]
-pub struct Stack<M> {
+pub struct NewProxy<M> {
     inner: M,
-}
-
-pub struct MakeFuture<C, F> {
-    classify: Option<C>,
-    inner: F,
 }
 
 #[derive(Clone, Debug)]
@@ -81,34 +75,14 @@ pub fn layer() -> Layer {
 }
 
 impl<M> tower::layer::Layer<M> for Layer {
-    type Service = Stack<M>;
+    type Service = NewProxy<M>;
 
     fn layer(&self, inner: M) -> Self::Service {
-        Stack { inner }
+        Self::Service { inner }
     }
 }
 
-impl<T, M> tower::Service<T> for Stack<M>
-where
-    T: CanClassify,
-    M: tower::Service<T>,
-{
-    type Response = Proxy<T::Classify, M::Response>;
-    type Error = M::Error;
-    type Future = MakeFuture<T::Classify, M::Future>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, target: T) -> Self::Future {
-        let classify = Some(target.classify());
-        let inner = self.inner.call(target);
-        MakeFuture { classify, inner }
-    }
-}
-
-impl<T, M> svc::NewService<T> for Stack<M>
+impl<T, M> svc::NewService<T> for NewProxy<M>
 where
     T: CanClassify,
     M: svc::NewService<T>,
@@ -119,17 +93,6 @@ where
         let classify = target.classify();
         let inner = self.inner.new_service(target);
         Proxy { classify, inner }
-    }
-}
-
-impl<C, F: Future> Future for MakeFuture<C, F> {
-    type Item = Proxy<C, F::Item>;
-    type Error = F::Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = try_ready!(self.inner.poll());
-        let classify = self.classify.take().expect("polled more than once");
-        Ok(Proxy { classify, inner }.into())
     }
 }
 
