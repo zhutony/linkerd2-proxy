@@ -130,7 +130,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                 // into a task so consumers can be ignorant. This woudld also
                 // probably enable the use of a lock.
                 let svc = svc::stack(connect::Connect::new(dst.control.connect.keepalive))
-                    .push(tls::client::layer(identity.local()))
+                    .push(tls::client::Layer::new(identity.local()))
                     .push_timeout(dst.control.connect.timeout)
                     .push(control::client::layer())
                     .push(control::resolve::layer(dns))
@@ -138,8 +138,8 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                         let backoff = dst.control.connect.backoff;
                         move |_| Ok(backoff.stream())
                     }))
-                    .push(http::metrics::layer::<_, classify::Response>(metrics))
-                    .push(control::add_origin::layer())
+                    .push(http::metrics::Layer::<_, classify::Response>::new(metrics))
+                    .push(control::add_origin::Layer::new())
                     .push_pending()
                     .push_per_service(
                         svc::layers()

@@ -1,12 +1,5 @@
 use futures::Poll;
 
-pub fn layer<T, M>(map_target: M) -> Layer<M>
-where
-    M: MapTarget<T>,
-{
-    Layer(map_target)
-}
-
 pub trait MapTarget<T> {
     type Target;
 
@@ -20,6 +13,12 @@ pub struct Layer<M>(M);
 pub struct Stack<S, M> {
     inner: S,
     map_target: M,
+}
+
+impl<M> Layer<M> {
+    pub fn new(map_target: M) -> Self {
+        Layer(map_target)
+    }
 }
 
 impl<S, M: Clone> tower::layer::Layer<S> for Layer<M> {

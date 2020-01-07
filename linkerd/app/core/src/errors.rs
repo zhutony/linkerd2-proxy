@@ -8,10 +8,6 @@ use linkerd2_proxy_http::HasH2Reason;
 use tracing::{debug, error, warn};
 
 /// Layer to map HTTP service errors into appropriate `http::Response`s.
-pub fn layer() -> Layer {
-    Layer
-}
-
 #[derive(Clone, Debug)]
 pub struct Layer;
 

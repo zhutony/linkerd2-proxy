@@ -99,15 +99,17 @@ where
 
 // === impl Layer ===
 
-pub fn layer<K, C>(registry: Arc<Mutex<Registry<K, C::Class>>>) -> Layer<K, C>
+impl<K, C> Layer<K, C>
 where
-    K: Clone + Hash + Eq,
-    C: ClassifyResponse + Clone + Default + Send + Sync + 'static,
+    K: Hash + Eq,
+    C: ClassifyResponse + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
-    Layer {
-        registry,
-        _p: PhantomData,
+    pub fn new(registry: Arc<Mutex<Registry<K, C::Class>>>) -> Self {
+        Layer {
+            registry,
+            _p: PhantomData,
+        }
     }
 }
 

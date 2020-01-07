@@ -16,10 +16,7 @@ use linkerd2_app_core::{
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self,
-        http::{
-            client, insert, metrics as http_metrics, normalize_uri, orig_proto, profiles,
-            strip_header,
-        },
+        http::{self, client, normalize_uri, orig_proto, profiles, strip_header},
         identity,
         server::{Protocol as ServerProtocol, Server},
         tap, tcp,
@@ -104,9 +101,9 @@ impl<A: OrigDstAddr> Config<A> {
             // Forwards TCP streams that cannot be decoded as HTTP.
             let tcp_forward = tcp_connect
                 .clone()
-                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                .push_map_target(|meta: tls::accept::Meta| {
                     TcpEndpoint::from(meta.addrs.target_addr())
-                }))
+                })
                 .push(svc::layer::mk(tcp::Forward::new));
 
             // Caches HTTP clients for each inbound port & HTTP settings.
@@ -119,20 +116,20 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(|ep: &HttpEndpoint| {
+                .push_trace(|ep: &HttpEndpoint| {
                     info_span!(
                         "endpoint",
                         port = %ep.port,
                         http = ?ep.settings,
                     )
-                }))
+                })
                 .check_service::<HttpEndpoint>();
 
             let http_target_observability = svc::layers()
                 // Registers the stack to be tapped.
                 .push(tap_layer)
                 // Records metrics for each `Target`.
-                .push(http_metrics::layer::<_, classify::Response>(
+                .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_endpoint,
                 ))
                 .push_per_service(trace_context::layer(
@@ -144,9 +141,9 @@ impl<A: OrigDstAddr> Config<A> {
             let http_profile_route_proxy = svc::stack(())
                 // Sets the route as a request extension so that it can be used
                 // by tap.
-                .push(insert::target::layer())
+                .push_http_insert_target()
                 // Records per-route metrics.
-                .push(http_metrics::layer::<_, classify::Response>(
+                .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route,
                 ))
                 // Sets the per-route response classifier as a request
@@ -158,7 +155,7 @@ impl<A: OrigDstAddr> Config<A> {
             // resolutions are shared even as the type of request may vary.
             let http_profile_cache = http_endpoint_cache
                 .check_service::<HttpEndpoint>()
-                .push(svc::map_target::layer(HttpEndpoint::from))
+                .push_map_target(HttpEndpoint::from)
                 .push(http_target_observability)
                 .check_service::<Target>()
                 // Provides route configuration without pdestination overrides.
@@ -171,7 +168,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Caches profile stacks.
                 .check_new_clone_service::<Profile>()
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(|_: &Profile| info_span!("profile")))
+                .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
                 .check_new_service_routes::<(), Target>()
@@ -198,7 +195,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // connections?
                 .push_load_shed()
                 // Synthesizes responses for proxy errors.
-                .push(errors::layer());
+                .push(errors::Layer);
 
             let http_server_observability = svc::layers()
                 .push(trace_context::layer(span_sink.map(|span_sink| {
@@ -229,13 +226,13 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_service(http_strip_headers)
                 .push_per_service(http_admit_request)
                 .push_per_service(http_server_observability)
-                .push(trace::layer(|src: &tls::accept::Meta| {
+                .push_trace(|src: &tls::accept::Meta| {
                     info_span!(
                         "source",
                         peer.id = ?src.peer_identity,
                         target.addr = %src.addrs.target_addr(),
                     )
-                }));
+                });
 
             let tcp_server = Server::new(
                 TransportLabels,

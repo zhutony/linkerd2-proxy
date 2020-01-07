@@ -34,8 +34,13 @@ pub enum ConnectFuture<L, F: Future> {
 
 // === impl Layer ===
 
-pub fn layer<L: HasConfig + Clone>(l: super::Conditional<L>) -> Layer<L> {
-    Layer(l)
+impl<L> Layer<L>
+where
+    L: HasConfig + Clone,
+{
+    pub fn new(l: super::Conditional<L>) -> Layer<L> {
+        Layer(l)
+    }
 }
 
 impl<L, C> tower::layer::Layer<C> for Layer<L>

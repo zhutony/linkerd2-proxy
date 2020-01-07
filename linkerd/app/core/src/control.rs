@@ -25,28 +25,32 @@ pub mod add_origin {
 
     #[derive(Debug)]
     pub struct Layer<M, B> {
-        _p: PhantomData<fn(B) -> M>,
+        _marker: PhantomData<fn(B) -> M>,
     }
 
     #[derive(Debug)]
     pub struct Stack<M, B> {
         inner: M,
-        _p: PhantomData<fn(B)>,
+        _marker: PhantomData<fn(B)>,
     }
 
     pub struct MakeFuture<F, B> {
         inner: F,
         authority: http::uri::Authority,
-        _p: PhantomData<fn(B)>,
+        _marker: PhantomData<fn(B)>,
     }
 
     // === impl Layer ===
 
-    pub fn layer<M, B>() -> Layer<M, B>
+    impl<M, B> Layer<M, B>
     where
         M: svc::Service<ControlAddr>,
     {
-        Layer { _p: PhantomData }
+        pub fn new() -> Self {
+            Layer {
+                _marker: PhantomData,
+            }
+        }
     }
 
     impl<M, B> Clone for Layer<M, B>
@@ -54,7 +58,9 @@ pub mod add_origin {
         M: svc::Service<ControlAddr>,
     {
         fn clone(&self) -> Self {
-            layer()
+            Self {
+                _marker: self._marker,
+            }
         }
     }
 
@@ -67,7 +73,7 @@ pub mod add_origin {
         fn layer(&self, inner: M) -> Self::Service {
             Stack {
                 inner,
-                _p: PhantomData,
+                _marker: PhantomData,
             }
         }
     }
@@ -93,7 +99,7 @@ pub mod add_origin {
             MakeFuture {
                 inner,
                 authority,
-                _p: PhantomData,
+                _marker: PhantomData,
             }
         }
     }
@@ -105,7 +111,7 @@ pub mod add_origin {
         fn clone(&self) -> Self {
             Self {
                 inner: self.inner.clone(),
-                _p: PhantomData,
+                _marker: PhantomData,
             }
         }
     }

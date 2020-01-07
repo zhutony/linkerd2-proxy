@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 pub use crate::proxy::{buffer, ready};
-use crate::{cache, proxy::http, Error};
+use crate::{cache, proxy::http, trace, Error};
 use linkerd2_concurrency_limit as concurrency_limit;
 pub use linkerd2_lock as lock;
 pub use linkerd2_stack::{
@@ -106,6 +106,14 @@ impl<S> Stack<S> {
         Stack(layer.layer(self.0))
     }
 
+    pub fn push_map_target<M: Clone>(self, map_target: M) -> Stack<map_target::Stack<S, M>> {
+        self.push(map_target::Layer::new(map_target))
+    }
+
+    pub fn push_trace<G: Clone>(self, get_span: G) -> Stack<trace::layer::MakeSpan<G, S>> {
+        self.push(trace::Layer::new(get_span))
+    }
+
     pub fn push_pending(self) -> Stack<pending::NewPending<S>> {
         self.push(pending::layer())
     }
@@ -167,6 +175,10 @@ impl<S> Stack<S> {
         map_response: R,
     ) -> Stack<map_response::MapResponse<S, R>> {
         self.push(map_response::Layer::new(map_response))
+    }
+
+    pub fn push_http_insert_target(self) -> Stack<http::insert::target::NewService<S>> {
+        self.push(http::insert::target::layer())
     }
 
     pub fn spawn_cache<T>(

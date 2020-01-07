@@ -43,7 +43,7 @@ impl Config {
 
                 let addr = control.addr;
                 let svc = svc::stack(connect::Connect::new(control.connect.keepalive))
-                    .push(tls::client::layer(tls::Conditional::Some(
+                    .push(tls::client::Layer::new(tls::Conditional::Some(
                         certify.trust_anchors.clone(),
                     )))
                     .push_timeout(control.connect.timeout)
@@ -53,11 +53,11 @@ impl Config {
                         let backoff = control.connect.backoff;
                         move |_| Ok(backoff.stream())
                     }))
-                    .push(proxy::http::metrics::layer::<_, classify::Response>(
+                    .push(proxy::http::metrics::Layer::<_, classify::Response>::new(
                         metrics,
                     ))
                     .push(proxy::grpc::req_body_as_payload::layer().per_service())
-                    .push(control::add_origin::layer())
+                    .push(control::add_origin::Layer::new())
                     .push_pending()
                     .push_per_service(svc::lock::Layer::new())
                     .into_inner()

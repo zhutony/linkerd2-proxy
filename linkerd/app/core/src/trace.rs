@@ -193,10 +193,6 @@ impl<T> GetSpan<T> for tracing::Span {
     }
 }
 
-pub fn layer<G>(get_span: G) -> self::layer::Layer<G> {
-    Layer::new(get_span)
-}
-
 pub use self::layer::Layer;
 
 pub mod layer {

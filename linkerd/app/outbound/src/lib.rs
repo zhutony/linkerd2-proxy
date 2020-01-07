@@ -26,7 +26,7 @@ use linkerd2_app_core::{
     reconnect, router, serve,
     spans::SpanConverter,
     svc::{self, NewService},
-    trace, trace_context,
+    trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
     Conditional, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER, L5D_CLIENT_ID,
     L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
@@ -116,7 +116,7 @@ impl<A: OrigDstAddr> Config<A> {
             // forwarding and HTTP proxying).
             let tcp_connect = svc::stack(connect::Connect::new(connect.keepalive))
                 // Initiates mTLS if the target is configured with identity.
-                .push(tls::client::layer(local_identity))
+                .push(tls::client::Layer::new(local_identity))
                 // Limits the time we wait for a connection to be established.
                 .push_timeout(connect.timeout)
                 .push(metrics.transport.layer_connect(TransportLabels));
@@ -124,16 +124,16 @@ impl<A: OrigDstAddr> Config<A> {
             // Forwards TCP streams that cannot be decoded as HTTP.
             let tcp_forward = tcp_connect
                 .clone()
-                .push(svc::map_target::layer(|meta: tls::accept::Meta| {
+                .push_map_target(|meta: tls::accept::Meta| {
                     TcpEndpoint::from(meta.addrs.target_addr())
-                }))
+                })
                 .push(svc::layer::mk(tcp::Forward::new));
 
             // Registers the stack with Tap, Metrics, and OpenCensus tracing
             // export.
             let http_endpoint_observability = svc::layers()
                 .push(tap_layer.clone())
-                .push(http::metrics::layer::<_, classify::Response>(
+                .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_endpoint.clone(),
                 ))
                 .push_per_service(trace_context::layer(
@@ -175,9 +175,9 @@ impl<A: OrigDstAddr> Config<A> {
                 // This sets headers so that the inbound proxy can downgrade the
                 // request properly.
                 .push(orig_proto_upgrade::layer())
-                .push(trace::layer(|endpoint: &HttpEndpoint| {
+                .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }));
+                });
 
             // Resolves each target via the control plane on a background task,
             // buffering results.
@@ -206,13 +206,11 @@ impl<A: OrigDstAddr> Config<A> {
                 // Shares the balancer, ensuring discovery errors are propagated.
                 .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(
-                    |c: &Concrete| info_span!("balance", addr = %c.dst),
-                ));
+                .push_trace(|c: &Concrete| info_span!("balance", addr = %c.dst));
 
             let http_profile_route_proxy = svc::stack(())
                 // Records metrics within retries.
-                .push(http::metrics::layer::<_, classify::Response>(
+                .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route_retry.clone(),
                 ))
                 // Sets an optional retry policy.
@@ -220,7 +218,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets an optional request timeout.
                 .push(http::timeout::layer())
                 // Records per-route metrics.
-                .push(http::metrics::layer::<_, classify::Response>(
+                .push(http::metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route,
                 ))
                 // Sets the per-route response classifier as a request
@@ -242,11 +240,11 @@ impl<A: OrigDstAddr> Config<A> {
                 ))
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
-                .push_per_service(svc::map_target::layer(Concrete::from))
+                .push_per_service(svc::map_target::Layer::new(Concrete::from))
                 .push_pending()
                 .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(|_: &Profile| info_span!("profile")))
+                .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
                 .push(router::Layer::new(|()| ProfileTarget))
                 .check_new_service_routes::<(), Logical>()
@@ -259,9 +257,7 @@ impl<A: OrigDstAddr> Config<A> {
             let dns_refine_cache = svc::stack(dns_resolver.into_make_refine())
                 .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(
-                    |name: &dns::Name| info_span!("canonicalize", %name),
-                ))
+                .push_trace(|name: &dns::Name| info_span!("canonicalize", %name))
                 // Obtains the lock, advances the state of the resolution
                 .push(svc::make_response::Layer)
                 // Ensures that the cache isn't locked when polling readiness.
@@ -284,9 +280,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
-                .push(trace::layer(
-                    |logical: &Logical| info_span!("logical", addr = %logical.dst),
-                ));
+                .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.dst));
 
             // Caches clients that bypass discovery/balancing.
             //
@@ -305,9 +299,9 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_pending()
                 .push_per_service(svc::lock::Layer::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push(trace::layer(|endpoint: &HttpEndpoint| {
+                .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                }))
+                })
                 .check_service::<HttpEndpoint>();
 
             let http_admit_request = svc::layers()
@@ -322,7 +316,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // connections?
                 .push_load_shed()
                 // Synthesizes responses for proxy errors.
-                .push(errors::layer())
+                .push(errors::Layer)
                 // Initiates OpenCensus tracing.
                 .push(trace_context::layer(span_sink.map(|span_sink| {
                     SpanConverter::server(span_sink, trace_labels())
@@ -332,12 +326,12 @@ impl<A: OrigDstAddr> Config<A> {
 
             let http_server = http_logical_router
                 .push_make_ready()
-                .push(svc::map_target::layer(|(l, _): (Logical, HttpEndpoint)| l))
+                .push_map_target(|(l, _): (Logical, HttpEndpoint)| l)
                 .push_per_service(svc::layers().boxed())
                 .push(fallback::layer(
                     http_forward_cache
                         .push_make_ready()
-                        .push(svc::map_target::layer(|(_, e): (Logical, HttpEndpoint)| e))
+                        .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
                         .push_per_service(svc::layers().boxed())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
@@ -346,11 +340,11 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_timeout(service_acquisition_timeout)
                 .push(router::Layer::new(LogicalOrFallbackTarget::from))
                 .push_per_service(http_admit_request)
-                .push(trace::layer(
+                .push_trace(
                     |src: &tls::accept::Meta| {
                         info_span!("source", target.addr = %src.addrs.target_addr())
                     },
-                ))
+                )
                 .check_new_service::<tls::accept::Meta>();
 
             let tcp_server = Server::new(

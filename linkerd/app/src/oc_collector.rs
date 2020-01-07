@@ -49,7 +49,7 @@ impl Config {
             Config::Enabled { control, hostname } => {
                 let addr = control.addr;
                 let svc = svc::stack(connect::Connect::new(control.connect.keepalive))
-                    .push(tls::client::layer(identity))
+                    .push(tls::client::Layer::new(identity))
                     .push_timeout(control.connect.timeout)
                     // TODO: perhaps rename from "control" to "grpc"
                     .push(control::client::layer())
@@ -62,7 +62,7 @@ impl Config {
                         move |_| Ok(backoff.stream())
                     }))
                     .push(proxy::grpc::req_body_as_payload::layer().per_service())
-                    .push(control::add_origin::layer())
+                    .push(control::add_origin::Layer::new())
                     .push_pending()
                     .push_per_service(svc::lock::Layer::new())
                     .check_new_service::<ControlAddr>()
