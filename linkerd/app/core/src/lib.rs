@@ -84,19 +84,6 @@ pub fn http_request_orig_dst_addr<B>(req: &http::Request<B>) -> Result<Addr, add
         .ok_or(addr::Error::InvalidHost)
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct DispatchDeadline(std::time::Instant);
-
-impl DispatchDeadline {
-    pub fn after(allowance: std::time::Duration) -> DispatchDeadline {
-        DispatchDeadline(tokio_timer::clock::now() + allowance)
-    }
-
-    pub fn extract<A>(req: &http::Request<A>) -> Option<std::time::Instant> {
-        req.extensions().get::<DispatchDeadline>().map(|d| d.0)
-    }
-}
-
 pub type ControlHttpMetricsRegistry =
     proxy::http::metrics::SharedRegistry<metric_labels::ControlLabels, classify::Class>;
 
