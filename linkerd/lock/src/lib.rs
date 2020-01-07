@@ -1,3 +1,5 @@
+//! A middleware for sharing an inner service via mutual exclusion.
+
 #![deny(warnings, rust_2018_idioms)]
 
 use futures::{future, Async, Future, Poll};
@@ -5,17 +7,21 @@ use linkerd2_error::Error;
 use tokio::sync::lock;
 use tracing::trace;
 
-pub trait CloneError {
-    type Error: Into<Error> + Clone;
-
-    fn clone_err(&self, err: Error) -> Self::Error;
-}
-
 #[derive(Clone, Debug)]
 pub struct Layer<E = Poisoned> {
     _marker: std::marker::PhantomData<E>,
 }
 
+/// Guards access to an inner service with a `tokio::sync::lock::Lock`.
+///
+/// As the service is polled to readiness, the lock is acquired and the inner
+/// service is polled. If the sevice is cloned, the service's lock state is not
+/// retained by the clone.
+///
+/// The inner service's errors are coerced to the cloneable `C`-typed error so
+/// that the error may be returned to all clones of the lock. By default, errors
+/// are propagated through the `Poisoned` type, but they may be propagated
+/// through custom types as well.
 pub struct Lock<S, E = Poisoned> {
     lock: lock::Lock<State<S, E>>,
     locked: Option<lock::LockGuard<State<S, E>>>,
@@ -26,18 +32,25 @@ enum State<S, E> {
     Error(E),
 }
 
+/// Propagates the inner error message to consumers.
 #[derive(Clone, Debug)]
 pub struct Poisoned(String);
 
-impl Layer {
-    pub fn new() -> Self {
-        Layer {
-            _marker: std::marker::PhantomData,
-        }
-    }
+// === impl Layer ===
 
-    pub fn with_errors<E: Clone + From<Error> + Into<Error>>(self) -> Layer<E> {
-        Layer {
+impl Default for Layer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<E> Layer<E>
+where
+    E: Clone + From<Error> + Into<Error>,
+{
+    /// Sets the error type to be returned to consumers when poll_ready fails.
+    pub fn new() -> Self {
+        Self {
             _marker: std::marker::PhantomData,
         }
     }
@@ -53,6 +66,8 @@ impl<S, E: From<Error> + Clone> tower::layer::Layer<S> for Layer<E> {
         }
     }
 }
+
+// === impl Lock ===
 
 impl<S, E> Clone for Lock<S, E> {
     fn clone(&self) -> Self {
@@ -76,11 +91,18 @@ where
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         loop {
             if let Some(state) = self.locked.as_mut() {
-                if let State::Service(ref mut service) = **state {
-                    return match service.poll_ready() {
-                        Ok(ok) => Ok(ok),
-                        Err(err) => {
-                            let err = E::from(err.into());
+                // Drive the service to readiness if it'is already locked.
+                if let State::Service(ref mut inner) = **state {
+                    return match inner.poll_ready() {
+                        Ok(ok) => {
+                            trace!(ready = ok.is_ready(), "service");
+                            Ok(ok)
+                        }
+                        Err(inner) => {
+                            // Coerce the error into `E` and clone it into the
+                            // locked state so that it can be returned from all
+                            // clones of the lock.
+                            let err = E::from(inner.into());
                             **state = State::Error(err.clone());
                             self.locked = None;
                             Err(err.into())
@@ -88,33 +110,46 @@ where
                     };
                 }
 
+                // If an error occured above,the locked state is dropped and
+                // cannot be acquired again.
                 unreachable!("must not lock on error");
             }
 
-            let locked = match self.lock.poll_lock() {
-                Async::Ready(locked) => locked,
+            // Acquire the inner service exclusively so that the service can be
+            // driven to readiness.
+            match self.lock.poll_lock() {
                 Async::NotReady => {
-                    trace!("awaiting lock");
+                    trace!(locked = false);
                     return Ok(Async::NotReady);
                 }
-            };
-            trace!("locked; awaiting readiness");
-            if let State::Error(ref e) = *locked {
-                return Err(e.clone().into());
-            }
+                Async::Ready(locked) => {
+                    if let State::Error(ref e) = *locked {
+                        return Err(e.clone().into());
+                    }
 
-            self.locked = Some(locked);
+                    trace!(locked = true);
+                    self.locked = Some(locked);
+                }
+            }
         }
     }
 
     fn call(&mut self, t: T) -> Self::Future {
         if let Some(mut state) = self.locked.take() {
-            if let State::Service(ref mut service) = *state {
-                return service.call(t).map_err(Into::into);
+            if let State::Service(ref mut inner) = *state {
+                return inner.call(t).map_err(Into::into);
             }
         }
 
         unreachable!("called before ready");
+    }
+}
+
+// === impl Poisoned ===
+
+impl From<Error> for Poisoned {
+    fn from(e: Error) -> Self {
+        Poisoned(e.to_string())
     }
 }
 
@@ -125,9 +160,3 @@ impl std::fmt::Display for Poisoned {
 }
 
 impl std::error::Error for Poisoned {}
-
-impl From<Error> for Poisoned {
-    fn from(e: Error) -> Self {
-        Poisoned(e.to_string())
-    }
-}

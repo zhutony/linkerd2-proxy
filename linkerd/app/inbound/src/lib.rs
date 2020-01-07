@@ -114,7 +114,7 @@ impl<A: OrigDstAddr> Config<A> {
                     move |_| Ok(backoff.stream())
                 }))
                 .push_pending()
-                .push_per_service(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::default())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|ep: &HttpEndpoint| {
                     info_span!(
@@ -164,7 +164,7 @@ impl<A: OrigDstAddr> Config<A> {
                     http_profile_route_proxy.into_inner(),
                 ))
                 .push_pending()
-                .push_per_service(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::default())
                 // Caches profile stacks.
                 .check_new_clone_service::<Profile>()
                 .spawn_cache(cache_capacity, cache_max_idle_age)

@@ -68,7 +68,7 @@ impl<L> Layers<L> {
     }
 
     pub fn push_lock(self) -> Layers<Pair<L, lock::Layer>> {
-        self.push(lock::Layer::new())
+        self.push(lock::Layer::default())
     }
 
     pub fn push_concurrency_limit(self, max: usize) -> Layers<Pair<L, concurrency_limit::Layer>> {
@@ -141,7 +141,7 @@ impl<S> Stack<S> {
     }
 
     pub fn push_lock(self) -> Stack<lock::Lock<S>> {
-        self.push(lock::Layer::new())
+        self.push(lock::Layer::default())
     }
 
     /// Buffer requests when when the next layer is out of capacity.

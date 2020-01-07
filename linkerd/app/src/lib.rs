@@ -146,7 +146,7 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                             .push(grpc::req_body_as_payload::layer())
                             // This stack isn't currently Sync; so a Buffer
                             // needs to be used instead of a Lock.
-                            // TODO .push(svc::lock::Layer::new())
+                            // TODO .push(svc::lock::Layer::default())
                             .push_buffer(dst.control.buffer_capacity),
                     )
                     .new_service(dst.control.addr.clone());

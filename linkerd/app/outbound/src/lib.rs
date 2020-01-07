@@ -204,7 +204,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Concrete>()
                 .push_pending()
                 // Shares the balancer, ensuring discovery errors are propagated.
-                .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
+                .push_per_service(svc::lock::Layer::<LogicalError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|c: &Concrete| info_span!("balance", addr = %c.dst));
 
@@ -242,7 +242,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // overridden by the profile layer.
                 .push_per_service(svc::map_target::Layer::new(Concrete::from))
                 .push_pending()
-                .push_per_service(svc::lock::Layer::new().with_errors::<LogicalError>())
+                .push_per_service(svc::lock::Layer::<LogicalError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
@@ -255,7 +255,7 @@ impl<A: OrigDstAddr> Config<A> {
             // For example, a client may send requests to `foo` or `foo.ns`; and
             // the canonical form of these names is `foo.ns.svc.cluster.local
             let dns_refine_cache = svc::stack(dns_resolver.into_make_refine())
-                .push_per_service(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::default())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|name: &dns::Name| info_span!("canonicalize", %name))
                 // Obtains the lock, advances the state of the resolution
@@ -297,7 +297,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_endpoint_observability.clone())
                 .push(http_endpoint_identity_headers.clone())
                 .push_pending()
-                .push_per_service(svc::lock::Layer::new())
+                .push_per_service(svc::lock::Layer::default())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
