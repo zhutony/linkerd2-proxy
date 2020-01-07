@@ -32,10 +32,10 @@ impl CanClassify for Route {
     }
 }
 
-impl retry::CanRetry for Route {
-    type Retry = Retry;
+impl retry::HasPolicy for Route {
+    type Policy = Retry;
 
-    fn can_retry(&self) -> Option<Self::Retry> {
+    fn retry_policy(&self) -> Option<Self::Policy> {
         self.route.retries().map(|retries| Retry {
             budget: retries.budget().clone(),
             response_classes: self.route.response_classes().clone(),
@@ -57,7 +57,7 @@ impl fmt::Display for Route {
 
 // === impl Retry ===
 
-impl retry::Retry for Retry {
+impl retry::Policy for Retry {
     fn retry<B1, B2>(
         &self,
         req: &http::Request<B1>,
