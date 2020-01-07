@@ -144,11 +144,11 @@ impl<A: OrigDstAddr + Send + 'static> Config<A> {
                     .push_per_service(
                         svc::layers()
                             .push(grpc::req_body_as_payload::layer())
+                            // This stack isn't currently Sync; so a Buffer
+                            // needs to be used instead of a Lock.
                             // TODO .push(svc::lock::Layer::new())
                             .push_buffer(dst.control.buffer_capacity),
                     )
-                    .check_new_service::<ControlAddr>()
-                    .into_inner()
                     .new_service(dst.control.addr.clone());
                 dst.build(svc)
             })
