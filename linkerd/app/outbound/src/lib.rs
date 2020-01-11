@@ -28,8 +28,8 @@ use linkerd2_app_core::{
     svc::{self, NewService},
     trace_context,
     transport::{self, connect, tls, OrigDstAddr, SysOrigDstAddr},
-    Conditional, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER, L5D_CLIENT_ID,
-    L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
+    Conditional, DiscoveryRejected, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER,
+    L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -231,6 +231,7 @@ impl<A: OrigDstAddr> Config<A> {
             // that profile resolutions are shared even as the type of request
             // may vary.
             let http_logical_profile_cache = http_balancer_cache
+                .clone()
                 .check_service::<Concrete>()
                 // Provides route configuration. The profile service operates
                 // over `Concret` services. When overrides are in play, the
@@ -239,6 +240,12 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
+                .push_per_service(svc::layers().boxed())
+                .push(fallback::layer(
+                    http_balancer_cache
+                        .push_per_service(svc::layers().boxed())
+                        .into_inner()
+                ).with_predicate(is_no_profile))
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
                 .push_per_service(svc::map_target::Layer::new(Concrete::from))
@@ -447,22 +454,3 @@ impl LogicalError {
         false
     }
 }
-
-// === impl DiscoveryRejected ===
-
-#[derive(Clone, Debug)]
-pub struct DiscoveryRejected(());
-
-impl DiscoveryRejected {
-    pub fn new() -> Self {
-        DiscoveryRejected(())
-    }
-}
-
-impl std::fmt::Display for DiscoveryRejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "discovery rejected")
-    }
-}
-
-impl std::error::Error for DiscoveryRejected {}

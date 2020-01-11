@@ -3,9 +3,8 @@ use linkerd2_app_core::{
     dns::Suffix,
     exp_backoff::{ExponentialBackoff, ExponentialBackoffStream},
     proxy::{api_resolve as api, resolve::recover},
-    request_filter, Addr, Error, Recover,
+    request_filter, Addr, DiscoveryRejected, Error, Recover,
 };
-use linkerd2_app_outbound::DiscoveryRejected;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tower_grpc::{generic::client::GrpcService, Body, BoxBody, Code, Status};

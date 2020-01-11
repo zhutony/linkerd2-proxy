@@ -44,6 +44,9 @@ pub struct MakeFuture<T, F, R, CMake, O> {
     inner: Option<Inner<T, R, CMake, O>>,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct NoProfile(());
+
 struct Inner<T, R, CMake, O> {
     target: T,
     default_route: Route,
@@ -57,7 +60,7 @@ where
     T: WithRoute,
     R: NewService<T::Route>,
 {
-    profiles: Option<watch::Receiver<Routes>>,
+    profiles: watch::Receiver<Routes>,
     requests: Requests<T, R>,
     concrete: C,
 }
@@ -119,11 +122,11 @@ where
     C: Clone,
 {
     type Response = Service<T, R, Forward<C>>;
-    type Error = G::Error;
+    type Error = Error;
     type Future = MakeFuture<T, G::Future, R, C, ()>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.get_routes.poll_ready()
+        self.get_routes.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, target: T) -> Self::Future {
@@ -150,11 +153,11 @@ where
     C: Clone,
 {
     type Response = Service<T, R, Override<C>>;
-    type Error = G::Error;
+    type Error = Error;
     type Future = MakeFuture<T, G::Future, R, C, SmallRng>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.get_routes.poll_ready()
+        self.get_routes.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, target: T) -> Self::Future {
@@ -177,14 +180,18 @@ impl<T, F, R, C> Future for MakeFuture<T, F, R, C, ()>
 where
     T: WithRoute + Clone,
     F: Future<Item = Option<watch::Receiver<Routes>>>,
+    F::Error: Into<Error>,
     R: NewService<T::Route>,
 {
     type Item = Service<T, R, Forward<C>>;
-    type Error = F::Error;
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("poll");
-        let profiles = try_ready!(self.future.poll());
+        let profiles = match try_ready!(self.future.poll().map_err(Into::into)) {
+            None => return Err(NoProfile(()).into()),
+            Some(p) => p,
+        };
 
         let Inner {
             target,
@@ -210,14 +217,18 @@ impl<T, F, R, C> Future for MakeFuture<T, F, R, C, SmallRng>
 where
     T: WithRoute + Clone,
     F: Future<Item = Option<watch::Receiver<Routes>>>,
+    F::Error: Into<Error>,
     R: NewService<T::Route> + Clone,
 {
     type Item = Service<T, R, Override<C>>;
-    type Error = F::Error;
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("poll");
-        let profiles = try_ready!(self.future.poll());
+        let profiles = match try_ready!(self.future.poll().map_err(Into::into)) {
+            None => return Err(NoProfile(()).into()),
+            Some(p) => p,
+        };
 
         let Inner {
             target,
@@ -254,30 +265,28 @@ where
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
     fn poll_update(&mut self) {
-        if let Some(ref mut profiles) = self.profiles {
-            let mut profile = None;
-            while let Some(Async::Ready(Some(update))) = profiles.poll().ok() {
-                profile = Some(update);
+        let mut profile = None;
+        while let Some(Async::Ready(Some(update))) = self.profiles.poll().ok() {
+            profile = Some(update);
+        }
+
+        if let Some(profile) = profile {
+            if profile.dst_overrides.is_empty() {
+                self.concrete
+                    .update
+                    .set_forward()
+                    .expect("both sides of the concrete updater must be held");
+            } else {
+                debug!(services = profile.dst_overrides.len(), "updating split");
+
+                self.concrete
+                    .update
+                    .set_split(profile.dst_overrides)
+                    .expect("both sides of the concrete updater must be held");
             }
 
-            if let Some(profile) = profile {
-                if profile.dst_overrides.is_empty() {
-                    self.concrete
-                        .update
-                        .set_forward()
-                        .expect("both sides of the concrete updater must be held");
-                } else {
-                    debug!(services = profile.dst_overrides.len(), "updating split");
-
-                    self.concrete
-                        .update
-                        .set_split(profile.dst_overrides)
-                        .expect("both sides of the concrete updater must be held");
-                }
-
-                debug!(routes = profile.routes.len(), "updating routes");
-                self.requests.set_routes(profile.routes);
-            }
+            debug!(routes = profile.routes.len(), "updating routes");
+            self.requests.set_routes(profile.routes);
         }
     }
 }
@@ -290,16 +299,14 @@ where
     // Drive the profiles stream to notready or completion, capturing the
     // most recent update.
     fn poll_update(&mut self) {
-        if let Some(ref mut profiles) = self.profiles {
-            let mut profile = None;
-            while let Some(Async::Ready(Some(update))) = profiles.poll().ok() {
-                profile = Some(update);
-            }
+        let mut profile = None;
+        while let Some(Async::Ready(Some(update))) = self.profiles.poll().ok() {
+            profile = Some(update);
+        }
 
-            if let Some(profile) = profile {
-                debug!(routes = profile.routes.len(), "updating routes");
-                self.requests.set_routes(profile.routes);
-            }
+        if let Some(profile) = profile {
+            debug!(routes = profile.routes.len(), "updating routes");
+            self.requests.set_routes(profile.routes);
         }
     }
 }
@@ -379,3 +386,11 @@ where
         self.service.call(req)
     }
 }
+
+impl std::fmt::Display for NoProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no profile for target")
+    }
+}
+
+impl std::error::Error for NoProfile {}

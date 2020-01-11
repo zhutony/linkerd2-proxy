@@ -91,3 +91,20 @@ pub struct ProxyMetrics {
     pub http_endpoint: HttpEndpointMetricsRegistry,
     pub transport: transport::MetricsRegistry,
 }
+
+#[derive(Clone, Debug)]
+pub struct DiscoveryRejected(());
+
+impl DiscoveryRejected {
+    pub fn new() -> Self {
+        DiscoveryRejected(())
+    }
+}
+
+impl std::fmt::Display for DiscoveryRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "discovery rejected")
+    }
+}
+
+impl std::error::Error for DiscoveryRejected {}
