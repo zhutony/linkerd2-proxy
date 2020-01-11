@@ -153,7 +153,7 @@ impl<A: OrigDstAddr> Config<A> {
                 )
                 .push(require_identity_on_endpoint::layer());
 
-            let http_balancer_endpoint = tcp_connect
+            let http_endpoint = tcp_connect
                 .clone()
                 // Initiates an HTTP client on the underlying transport.
                 // Prior-knowledge HTTP/2 is typically used (i.e. when
@@ -177,7 +177,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(orig_proto_upgrade::layer())
                 .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                });
+                })
+                .push_per_service(svc::layers().boxed());
 
             // Resolves each target via the control plane on a background task,
             // buffering results.
@@ -197,7 +198,7 @@ impl<A: OrigDstAddr> Config<A> {
             // to the application-selected original destination.
 
             // Builds a balancer for each concrete destination.
-            let http_balancer_cache = http_balancer_endpoint
+            let http_balancer_cache = http_endpoint
                 .push_spawn_ready()
                 .push(discover)
                 .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))

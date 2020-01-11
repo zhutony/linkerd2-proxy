@@ -155,10 +155,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_map_target(HttpEndpoint::from)
                 // Normalizes the URI, i.e. if it was originally in
                 // absolute-form on the outbound side.
-                //
-                // XXX Note that this uses the canonical name from the target
-                // rather than the relative name that may have originally
-                // existed on the outbound request.
                 .push(normalize_uri::layer())
                 .push(http_target_observability)
                 .push_pending()

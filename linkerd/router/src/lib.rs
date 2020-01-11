@@ -11,6 +11,10 @@ pub trait Key<T> {
     fn key(&self, t: &T) -> Self::Key;
 }
 
+pub fn key<F>(f: F) -> KeyFn<F> {
+    KeyFn(f)
+}
+
 #[derive(Clone, Debug)]
 pub struct Layer<T> {
     make_key: T,
@@ -27,6 +31,9 @@ pub struct Router<T, M> {
     key: T,
     make: M,
 }
+
+#[derive(Clone, Debug)]
+pub struct KeyFn<F>(F);
 
 impl<K: Clone> Layer<K> {
     pub fn new(make_key: K) -> Self {
@@ -124,14 +131,14 @@ where
     }
 }
 
-impl<T, K, F> Key<T> for F
+impl<T, K, F> Key<T> for KeyFn<F>
 where
-    F: Fn(&T) -> K,
     K: Clone + Eq + Hash,
+    F: Fn(&T) -> K,
 {
     type Key = K;
 
     fn key(&self, t: &T) -> Self::Key {
-        (self)(t)
+        (self.0)(t)
     }
 }
