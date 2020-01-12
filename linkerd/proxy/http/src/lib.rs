@@ -7,6 +7,7 @@ use linkerd2_identity as identity;
 
 pub mod add_header;
 pub mod balance;
+pub mod box_request;
 pub mod box_response;
 pub mod boxed;
 pub mod canonicalize;
