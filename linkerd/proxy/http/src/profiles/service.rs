@@ -44,9 +44,6 @@ pub struct MakeFuture<T, F, R, CMake, O> {
     inner: Option<Inner<T, R, CMake, O>>,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct NoProfile(());
-
 struct Inner<T, R, CMake, O> {
     target: T,
     default_route: Route,
@@ -179,7 +176,7 @@ where
 impl<T, F, R, C> Future for MakeFuture<T, F, R, C, ()>
 where
     T: WithRoute + Clone,
-    F: Future<Item = Option<watch::Receiver<Routes>>>,
+    F: Future<Item = watch::Receiver<Routes>>,
     F::Error: Into<Error>,
     R: NewService<T::Route>,
 {
@@ -188,10 +185,7 @@ where
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("poll");
-        let profiles = match try_ready!(self.future.poll().map_err(Into::into)) {
-            None => return Err(NoProfile(()).into()),
-            Some(p) => p,
-        };
+        let profiles = try_ready!(self.future.poll().map_err(Into::into));
 
         let Inner {
             target,
@@ -216,7 +210,7 @@ where
 impl<T, F, R, C> Future for MakeFuture<T, F, R, C, SmallRng>
 where
     T: WithRoute + Clone,
-    F: Future<Item = Option<watch::Receiver<Routes>>>,
+    F: Future<Item = watch::Receiver<Routes>>,
     F::Error: Into<Error>,
     R: NewService<T::Route> + Clone,
 {
@@ -225,10 +219,7 @@ where
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         trace!("poll");
-        let profiles = match try_ready!(self.future.poll().map_err(Into::into)) {
-            None => return Err(NoProfile(()).into()),
-            Some(p) => p,
-        };
+        let profiles = try_ready!(self.future.poll().map_err(Into::into));
 
         let Inner {
             target,
@@ -386,11 +377,3 @@ where
         self.service.call(req)
     }
 }
-
-impl std::fmt::Display for NoProfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "no profile for target")
-    }
-}
-
-impl std::error::Error for NoProfile {}

@@ -118,7 +118,7 @@ where
     R: Recover + Send + Clone + 'static,
     R::Backoff: Send,
 {
-    type Response = Option<Receiver>;
+    type Response = Receiver;
     type Error = Error;
     type Future = ProfileFuture<S, R>;
 
@@ -181,12 +181,12 @@ where
     R: Recover + Send + 'static,
     R::Backoff: Send,
 {
-    type Item = Option<Receiver>;
+    type Item = Receiver;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.inner {
-            ProfileFutureInner::Disabled => Ok(None.into()),
+            ProfileFutureInner::Disabled => Err(super::DiscoveryRejected::new().into()),
             ProfileFutureInner::Pending(ref mut inner, ref mut timeout) => {
                 let profile = match inner.as_mut().expect("polled after ready").poll_profile() {
                     Err(error) => {
@@ -213,7 +213,7 @@ where
                         .map_err(|n| match n {}),
                 );
 
-                Ok(Some(rx).into())
+                Ok(rx.into())
             }
         }
     }

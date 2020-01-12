@@ -135,10 +135,7 @@ where
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let rsp: http::Response<B> = try_ready!(self.future.poll().map_err(Into::into));
-        let rsp: Response = rsp.map(|inner| Payload {
-            inner: Box::new(inner),
-        });
-        Ok(rsp.into())
+        Ok(rsp.map(Payload::new).into())
     }
 }
 
@@ -146,6 +143,17 @@ impl Default for Payload {
     fn default() -> Self {
         Self {
             inner: Box::new(NoPayload),
+        }
+    }
+}
+
+impl Payload {
+    pub fn new<B>(inner: B) -> Self
+    where
+        B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+    {
+        Self {
+            inner: Box::new(inner),
         }
     }
 }

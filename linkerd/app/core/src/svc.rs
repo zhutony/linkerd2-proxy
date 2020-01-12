@@ -87,12 +87,23 @@ impl<L> Layers<L> {
         self.push(timeout::ready::Layer::new(timeout))
     }
 
-    pub fn boxed<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
+    pub fn push_map_response<R: Clone>(
+        self,
+        map_response: R,
+    ) -> Layers<Pair<L, map_response::Layer<R>>> {
+        self.push(map_response::Layer::new(map_response))
+    }
+
+    pub fn boxed_http<A, B>(self) -> Layers<Pair<L, http::boxed::Layer<A, B>>>
     where
         A: 'static,
         B: hyper::body::Payload<Data = http::boxed::Data, Error = Error> + 'static,
     {
         self.push(http::boxed::Layer::new())
+    }
+
+    pub fn boxed_http_response(self) -> Layers<Pair<L, http::box_response::Layer>> {
+        self.push(http::box_response::Layer)
     }
 
     pub fn push_oneshot(self) -> Layers<Pair<L, oneshot::Layer>> {
@@ -216,7 +227,11 @@ impl<S> Stack<S> {
         )
     }
 
-    pub fn boxed<A, B>(self) -> Stack<http::boxed::BoxedService<A>>
+    pub fn boxed_http_response(self) -> Stack<http::box_response::BoxResponse<S>> {
+        self.push(http::box_response::Layer)
+    }
+
+    pub fn boxed_http<A, B>(self) -> Stack<http::boxed::BoxedService<A>>
     where
         A: 'static,
         S: tower::Service<http::Request<A>, Response = http::Response<B>> + Send + 'static,

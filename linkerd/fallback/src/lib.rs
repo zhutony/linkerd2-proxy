@@ -1,9 +1,9 @@
 #![deny(warnings, rust_2018_idioms)]
 
-use futures::{Async, Future, Poll};
+use futures::{Future, Poll};
 use linkerd2_error::Error;
-use tower::util::{Oneshot, ServiceExt};
-use tracing::{debug, trace};
+use tower::util::{Either, Oneshot, ServiceExt};
+use tracing::debug;
 
 /// A fallback layer composing two service builders.
 ///
@@ -23,30 +23,25 @@ pub struct Fallback<I, F, P> {
     predicate: P,
 }
 
-pub struct MakeFuture<I, F, P> {
-    predicate: P,
-    state: State<I, F>,
-}
-
-enum State<I, F> {
-    Primary(I, Option<F>),
-    Fallback(F),
-}
-
-pub fn layer<F>(fallback: F) -> Layer<F> {
-    let predicate: fn(&Error) -> bool = |_| true;
-    Layer {
-        fallback,
-        predicate,
-    }
+pub enum MakeFuture<A, B, P> {
+    A { a: A, b: Option<B>, predicate: P },
+    B(B),
 }
 
 // === impl Layer ===
 
-impl<F> Layer<F> {
+impl<B> Layer<B> {
+    pub fn new(fallback: B) -> Self {
+        let predicate: fn(&Error) -> bool = |_| true;
+        Self {
+            fallback,
+            predicate,
+        }
+    }
+
     /// Returns a `Layer` that uses the given `predicate` to determine whether
     /// to fall back.
-    pub fn with_predicate<P>(self, predicate: P) -> Layer<F, P>
+    pub fn with_predicate<P>(self, predicate: P) -> Layer<B, P>
     where
         P: Fn(&Error) -> bool + Clone,
     {
@@ -58,7 +53,7 @@ impl<F> Layer<F> {
 
     /// Returns a `Layer` that falls back if the error or its source is of
     /// type `E`.
-    pub fn on_error<E>(self) -> Layer<F>
+    pub fn on_error<E>(self) -> Layer<B>
     where
         E: std::error::Error + 'static,
     {
@@ -66,14 +61,14 @@ impl<F> Layer<F> {
     }
 }
 
-impl<I, F, P> tower::layer::Layer<I> for Layer<F, P>
+impl<A, B, P> tower::layer::Layer<A> for Layer<B, P>
 where
-    F: Clone,
+    B: Clone,
     P: Clone,
 {
-    type Service = Fallback<I, F, P>;
+    type Service = Fallback<A, B, P>;
 
-    fn layer(&self, inner: I) -> Self::Service {
+    fn layer(&self, inner: A) -> Self::Service {
         Self::Service {
             inner,
             fallback: self.fallback.clone(),
@@ -84,69 +79,69 @@ where
 
 // === impl Fallback ===
 
-impl<I, F, P, T> tower::Service<T> for Fallback<I, F, P>
+impl<A, B, P, T> tower::Service<T> for Fallback<A, B, P>
 where
     T: Clone,
-    I: tower::Service<T>,
-    I::Error: Into<Error>,
-    F: tower::Service<T> + Clone,
-    F::Response: Into<I::Response>,
-    F::Error: Into<Error>,
+    A: tower::Service<T>,
+    A::Error: Into<Error>,
+    B: tower::Service<T> + Clone,
+    B::Error: Into<Error>,
     P: Fn(&Error) -> bool,
     P: Clone,
 {
-    type Response = I::Response;
+    type Response = Either<A::Response, B::Response>;
     type Error = Error;
-    type Future = MakeFuture<I::Future, Oneshot<F, T>, P>;
+    type Future = MakeFuture<A::Future, Oneshot<B, T>, P>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.inner.poll_ready().map_err(Into::into)
     }
 
     fn call(&mut self, target: T) -> Self::Future {
-        let future = self.inner.call(target.clone());
-        Self::Future {
-            state: State::Primary(future, Some(self.fallback.clone().oneshot(target))),
+        MakeFuture::A {
+            a: self.inner.call(target.clone()),
+            b: Some(self.fallback.clone().oneshot(target)),
             predicate: self.predicate.clone(),
         }
     }
 }
 
-impl<I, F, P> Future for MakeFuture<I, F, P>
+// === impl MakeFuture ===
+
+impl<A, B, P> Future for MakeFuture<A, B, P>
 where
-    I: Future,
-    I::Error: Into<Error>,
-    F: Future,
-    F::Item: Into<I::Item>,
-    F::Error: Into<Error>,
+    A: Future,
+    A::Error: Into<Error>,
+    B: Future,
+    B::Error: Into<Error>,
     P: Fn(&Error) -> bool,
 {
-    type Item = I::Item;
+    type Item = Either<A::Item, B::Item>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            self.state = match self.state {
-                State::Primary(ref mut i, ref mut f) => match i.poll() {
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(v)) => {
-                        trace!("primary succeeded");
-                        return Ok(Async::Ready(v));
-                    }
+            *self = match self {
+                MakeFuture::A {
+                    ref mut a,
+                    ref mut b,
+                    ref predicate,
+                } => match a.poll() {
+                    Ok(ok) => return Ok(ok.map(Either::A)),
                     Err(e) => {
                         let error = e.into();
-                        if !(self.predicate)(&error) {
+                        if !(predicate)(&error) {
                             return Err(error);
                         }
 
-                        debug!(%error, "falling back");
-                        State::Fallback(f.take().unwrap())
+                        debug!(%error, "Falling back");
+                        MakeFuture::B(b.take().unwrap())
                     }
                 },
-                State::Fallback(ref mut f) => {
-                    return f.poll().map(|a| a.map(Into::into)).map_err(Into::into);
+                MakeFuture::B(ref mut b) => {
+                    return b.poll().map(|ok| ok.map(Either::B)).map_err(Into::into);
                 }
-            }
+            };
         }
     }
 }

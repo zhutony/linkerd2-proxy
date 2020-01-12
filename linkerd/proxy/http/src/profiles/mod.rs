@@ -40,7 +40,7 @@ pub type Sender = watch::Sender<Routes>;
 /// never ends and cannot fail.
 pub trait GetRoutes<T> {
     type Error: Into<Error>;
-    type Future: Future<Item = Option<Receiver>, Error = Self::Error>;
+    type Future: Future<Item = Receiver, Error = Self::Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error>;
 
@@ -50,7 +50,7 @@ pub trait GetRoutes<T> {
 impl<T, S> GetRoutes<T> for S
 where
     T: HasDestination,
-    S: tower::Service<Addr, Response = Option<watch::Receiver<Routes>>>,
+    S: tower::Service<Addr, Response = watch::Receiver<Routes>>,
     S::Error: Into<Error>,
 {
     type Error = S::Error;

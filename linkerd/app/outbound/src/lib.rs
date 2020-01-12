@@ -178,7 +178,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 })
-                .push_per_service(svc::layers().boxed());
+                .push_per_service(svc::layers().boxed_http());
 
             // Resolves each target via the control plane on a background task,
             // buffering results.
@@ -240,12 +240,17 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
-                .push_per_service(svc::layers().boxed())
-                .push(fallback::layer(
-                    http_balancer_cache
-                        .push_per_service(svc::layers().boxed())
-                        .into_inner()
-                ).with_predicate(is_no_profile))
+                // .push_per_service(
+                //     svc::layers().push_per_service(svc::layers().boxed_http_response()),
+                // )
+                // .push(
+                //     fallback::Layer::new(
+                //         http_balancer_cache
+                //             .push_per_service(svc::layers().boxed_http_response())
+                //             .into_inner(),
+                //     )
+                //     .on_error::<DiscoveryRejected>(),
+                // )
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
                 .push_per_service(svc::map_target::Layer::new(Concrete::from))
@@ -335,12 +340,12 @@ impl<A: OrigDstAddr> Config<A> {
             let http_server = http_logical_router
                 .push_make_ready()
                 .push_map_target(|(l, _): (Logical, HttpEndpoint)| l)
-                .push_per_service(svc::layers().boxed())
-                .push(fallback::layer(
+                .push_per_service(svc::layers().boxed_http_response())
+                .push(fallback::Layer::new(
                     http_forward_cache
                         .push_make_ready()
                         .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
-                        .push_per_service(svc::layers().boxed())
+                        .push_per_service(svc::layers().boxed_http_response())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .check_service::<(Logical, HttpEndpoint)>()
