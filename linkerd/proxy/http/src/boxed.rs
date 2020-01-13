@@ -65,8 +65,8 @@ struct InnerFuture<F, B> {
     _marker: std::marker::PhantomData<fn() -> B>,
 }
 
-pub struct Payload {
-    inner: Box<dyn hyper::body::Payload<Data = Data, Error = Error> + Send + 'static>,
+pub struct Payload<D = Data, E: Into<Error> = Error> {
+    inner: Box<dyn hyper::body::Payload<Data = D, Error = E> + Send + 'static>,
 }
 
 struct NoPayload;
@@ -147,10 +147,11 @@ impl Default for Payload {
     }
 }
 
-impl Payload {
+impl<D: bytes::Buf, E: Into<Error>> Payload<D, E> {
     pub fn new<B>(inner: B) -> Self
     where
-        B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+        D: Send + 'static,
+        B: hyper::body::Payload<Data = D, Error = E> + 'static,
     {
         Self {
             inner: Box::new(inner),
@@ -158,20 +159,30 @@ impl Payload {
     }
 }
 
-impl hyper::body::Payload for Payload {
-    type Data = Data;
-    type Error = Error;
+impl<D, E> hyper::body::Payload for Payload<D, E>
+where
+    D: bytes::Buf + Send + 'static,
+    E: Into<Error> + 'static,
+{
+    type Data = D;
+    type Error = E;
 
     fn is_end_stream(&self) -> bool {
         self.inner.is_end_stream()
     }
 
     fn poll_data(&mut self) -> Poll<Option<Self::Data>, Self::Error> {
-        self.inner.poll_data().map_err(Into::into)
+        self.inner.poll_data()
     }
 
     fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, Self::Error> {
-        self.inner.poll_trailers().map_err(Into::into)
+        self.inner.poll_trailers()
+    }
+}
+
+impl<D, E: Into<Error>> std::fmt::Debug for Payload<D, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payload").finish()
     }
 }
 

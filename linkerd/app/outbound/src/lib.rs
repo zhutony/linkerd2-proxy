@@ -175,10 +175,10 @@ impl<A: OrigDstAddr> Config<A> {
                 // This sets headers so that the inbound proxy can downgrade the
                 // request properly.
                 .push(orig_proto_upgrade::layer())
+                .check_service::<HttpEndpoint>()
                 .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                })
-                .push_per_service(svc::layers().boxed_http());
+                });
 
             // Resolves each target via the control plane on a background task,
             // buffering results.
@@ -225,6 +225,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets the per-route response classifier as a request
                 // extension.
                 .push(classify::layer())
+                //.push_per_service(svc::layers().boxed_http_response())
                 .check_new_clone_service::<dst::Route>();
 
             // Routes `Logical` targets to a cached `Profile` stack, i.e. so
@@ -240,17 +241,7 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
-                // .push_per_service(
-                //     svc::layers().push_per_service(svc::layers().boxed_http_response()),
-                // )
-                // .push(
-                //     fallback::Layer::new(
-                //         http_balancer_cache
-                //             .push_per_service(svc::layers().boxed_http_response())
-                //             .into_inner(),
-                //     )
-                //     .on_error::<DiscoveryRejected>(),
-                // )
+                .check_make_service::<Profile, Concrete>()
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
                 .push_per_service(svc::map_target::Layer::new(Concrete::from))
@@ -262,6 +253,18 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(router::Layer::new(|()| ProfileTarget))
                 .check_new_service_routes::<(), Logical>()
                 .new_service(());
+
+            //.push_per_service(svc::layers().boxed_http_response())
+            // .check_service::<Logical>()
+            // .push(
+            //     fallback::Layer::new(
+            //         http_balancer_cache
+            //             .push_per_service(svc::layers().boxed_http())
+            //             .push_map_target(Concrete::from)
+            //             .into_inner(),
+            //     )
+            //     .on_error::<DiscoveryRejected>(),
+            // )
 
             // Caches DNS refinements from relative names to canonical names.
             //
@@ -280,6 +283,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Routes requests to their logical target.
             let http_logical_router = svc::stack(http_logical_profile_cache)
+                .check_service::<Logical>()
                 // Sets the canonical-dst header on all outbound requests.
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 // Strips headers that may be set by this proxy.
@@ -293,6 +297,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
+                .check_service::<Logical>()
                 .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.dst));
 
             // Caches clients that bypass discovery/balancing.
@@ -310,7 +315,8 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_endpoint_observability.clone())
                 .push(http_endpoint_identity_headers.clone())
                 .push_pending()
-                .push_per_service(svc::lock::Layer::default())
+                .push_per_service(svc::layers().boxed_http_response()
+                .push_lock())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|endpoint: &HttpEndpoint| {
                     info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
@@ -338,14 +344,16 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer());
 
             let http_server = http_logical_router
+                .check_service::<Logical>()
                 .push_make_ready()
                 .push_map_target(|(l, _): (Logical, HttpEndpoint)| l)
                 .push_per_service(svc::layers().boxed_http_response())
+                .check_service::<(Logical, HttpEndpoint)>()
                 .push(fallback::Layer::new(
                     http_forward_cache
-                        .push_make_ready()
-                        .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
-                        .push_per_service(svc::layers().boxed_http_response())
+                    .push_make_ready()
+                    .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
+                    .push_per_service(svc::layers().boxed_http_response())
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .check_service::<(Logical, HttpEndpoint)>()

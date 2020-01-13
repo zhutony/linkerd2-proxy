@@ -1,6 +1,7 @@
 use super::boxed::{Data, Payload};
 use futures::{future, Future, Poll};
 use linkerd2_error::Error;
+use linkerd2_stack::Proxy;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Layer;
@@ -16,9 +17,25 @@ impl<S> tower::layer::Layer<S> for Layer {
     }
 }
 
-impl<S, A, B> tower::Service<A> for BoxResponse<S>
+impl<Req, B, S, P> Proxy<Req, S> for BoxResponse<P>
 where
-    S: tower::Service<A, Response = http::Response<B>>,
+    P: Proxy<Req, S, Response = http::Response<B>>,
+    S: tower::Service<P::Request>,
+    B: hyper::body::Payload<Data = Data, Error = Error> + Send + 'static,
+{
+    type Request = P::Request;
+    type Response = http::Response<Payload>;
+    type Error = P::Error;
+    type Future = future::Map<P::Future, fn(P::Response) -> Self::Response>;
+
+    fn proxy(&self, inner: &mut S, req: Req) -> Self::Future {
+        self.0.proxy(inner, req).map(|rsp| rsp.map(Payload::new))
+    }
+}
+
+impl<S, Req, B> tower::Service<Req> for BoxResponse<S>
+where
+    S: tower::Service<Req, Response = http::Response<B>>,
     B: hyper::body::Payload<Data = Data, Error = Error> + Send + 'static,
 {
     type Response = http::Response<Payload>;
@@ -29,7 +46,7 @@ where
         self.0.poll_ready()
     }
 
-    fn call(&mut self, req: A) -> Self::Future {
+    fn call(&mut self, req: Req) -> Self::Future {
         self.0.call(req).map(|rsp| rsp.map(Payload::new))
     }
 }
