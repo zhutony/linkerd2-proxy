@@ -160,6 +160,8 @@ impl<A: OrigDstAddr> Config<A> {
                 // communicating with other proxies); though HTTP/1.x fallback
                 // is supported as needed.
                 .push(http::client::layer(connect.h2_settings))
+                .push_per_service(svc::layers().boxed_http_request())
+                //q.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 // Re-establishes a connection when the client fails.
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
@@ -200,6 +202,7 @@ impl<A: OrigDstAddr> Config<A> {
             // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_endpoint
                 .push_spawn_ready()
+                .check_service::<HttpEndpoint>()
                 .push(discover)
                 .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .check_service::<Concrete>()

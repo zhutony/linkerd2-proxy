@@ -21,7 +21,9 @@ impl<B> Clone for Layer<B> {
 
 impl<S, B> tower::layer::Layer<S> for Layer<B>
 where
-    S: tower::Service<http::Request<B>>,
+    B: hyper::body::Payload + Send + 'static,
+    B::Error: Into<Error> + 'static,
+    S: tower::Service<http::Request<Payload<B::Data, B::Error>>>,
 {
     type Service = BoxRequest<S, B>;
 
