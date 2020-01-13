@@ -102,7 +102,7 @@ impl<L> Layers<L> {
         self.push(http::boxed::Layer::new())
     }
 
-    pub fn boxed_http_request<B>(self) -> Layers<Pair<L, http::box_request::Layer<B>>> {
+    pub fn boxed_http_request(self) -> Layers<Pair<L, http::box_request::Layer>> {
         self.push(http::box_request::Layer::new())
     }
 
@@ -242,12 +242,7 @@ impl<S> Stack<S> {
         self.push(http::boxed::Layer::new())
     }
 
-    pub fn boxed_http_request<B>(self) -> Stack<http::box_request::BoxRequest<S, B>>
-    where
-        B: hyper::body::Payload + Send + 'static,
-        B::Error: Into<Error> + 'static,
-        S: tower::Service<http::Request<http::boxed::Payload<B::Data, B::Error>>>,
-    {
+    pub fn boxed_http_request(self) -> Stack<http::box_request::BoxRequest<S>> {
         self.push(http::box_request::Layer::new())
     }
 

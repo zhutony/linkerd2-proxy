@@ -2,37 +2,27 @@ use super::boxed::Payload;
 use futures::Poll;
 use linkerd2_error::Error;
 
-pub struct Layer<B>(std::marker::PhantomData<fn(B)>);
+#[derive(Clone, Debug)]
+pub struct Layer(());
 
 #[derive(Clone, Debug)]
-pub struct BoxRequest<S, B>(S, std::marker::PhantomData<fn(B)>);
+pub struct BoxRequest<S>(S);
 
-impl<B> Layer<B> {
+impl Layer {
     pub fn new() -> Self {
-        Layer(std::marker::PhantomData)
+        Layer(())
     }
 }
 
-impl<B> Clone for Layer<B> {
-    fn clone(&self) -> Self {
-        Layer(self.0)
-    }
-}
-
-impl<S, B> tower::layer::Layer<S> for Layer<B>
-where
-    B: hyper::body::Payload + Send + 'static,
-    B::Error: Into<Error> + 'static,
-    S: tower::Service<http::Request<Payload<B::Data, B::Error>>>,
-{
-    type Service = BoxRequest<S, B>;
+impl<S> tower::layer::Layer<S> for Layer {
+    type Service = BoxRequest<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        BoxRequest(inner, self.0)
+        BoxRequest(inner)
     }
 }
 
-impl<S, B> tower::Service<http::Request<B>> for BoxRequest<S, B>
+impl<S, B> tower::Service<http::Request<B>> for BoxRequest<S>
 where
     B: hyper::body::Payload + Send + 'static,
     B::Error: Into<Error> + 'static,
