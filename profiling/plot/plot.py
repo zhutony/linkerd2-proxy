@@ -12,7 +12,7 @@ parser.add_argument("--logy", dest="logy", action="store_true", help="Use logari
 parser.set_defaults(logy=False)
 args = parser.parse_args()
 
-indices = ["Test", " target req/s", " req len"]
+indices = ["Test", "target req/s", "req len"]
 g = pd.concat([pd.read_csv(args.input1, index_col=indices), pd.read_csv(args.input2, index_col=indices)])
 g.groupby(level=indices)
 
@@ -30,8 +30,8 @@ except Exception as e:
   print("Error:", e)
 
 try:
-  only_latency = g[[" branch", " p999 latency (ms)"]][ g[" p999 latency (ms)"] > 0 ]
-  rearrange_latency = only_latency.pivot_table(index=indices, columns=" branch", values=" p999 latency (ms)")
+  only_latency = g[["branch", "p999 latency (ms)"]][ g["p999 latency (ms)"] > 0 ]
+  rearrange_latency = only_latency.pivot_table(index=indices, columns="branch", values="p999 latency (ms)", aggfunc=[np.mean, np.std])
   rearrange_latency.plot(kind="bar", logy=args.logy, title="p999 Latency (ms)", figsize=(28, 3), fontsize=7) # increase figsize x value if labels overlap
   plt.xticks(rotation = 0)
   outfile_latency = args.outputprefix + "latency.png"
