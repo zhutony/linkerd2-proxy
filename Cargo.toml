@@ -49,5 +49,14 @@ debug = false
 
 [patch.crates-io]
 webpki = { git = "https://github.com/seanmonstar/webpki", branch = "cert-dns-names-0.21" }
-hyper = { git = "https://github.com/hawkw/hyper", branch = "eliza/tracing-test"}
+hyper = { git = "https://github.com/hawkw/hyper", branch = "eliza/tracing-test2"}
 h2 = { git = "https://github.com/hyperium/h2", branch = "eliza/tracing-test" }
+tokio-io = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-sync = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-tcp = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-reactor = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-threadpool = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-timer = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-executor = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-codec = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
+tokio-current-thread = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
