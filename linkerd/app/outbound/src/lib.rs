@@ -160,8 +160,6 @@ impl<A: OrigDstAddr> Config<A> {
                 // communicating with other proxies); though HTTP/1.x fallback
                 // is supported as needed.
                 .push(http::client::layer(connect.h2_settings))
-                .push_per_service(svc::layers().boxed_http_request())
-                //q.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 // Re-establishes a connection when the client fails.
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
@@ -182,6 +180,37 @@ impl<A: OrigDstAddr> Config<A> {
                     info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
                 });
 
+            // Caches clients that bypass discovery/balancing.
+            //
+            // This is effectively the same as the endpoint stack; but the
+            // client layer captures the requst body type (via PhantomData), so
+            // the stack cannot be shared directly.
+            let http_forward_cache = tcp_connect
+                .clone()
+                // Initiates an HTTP client on the underlying transport.
+                // Prior-knowledge HTTP/2 is typically used (i.e. when
+                // communicating with other proxies); though HTTP/1.x fallback
+                // is supported as needed.
+                .push(http::client::layer(connect.h2_settings))
+                // Re-establishes a connection when the client fails.
+                .push(reconnect::layer({
+                    let backoff = connect.backoff.clone();
+                    move |_| Ok(backoff.stream())
+                }))
+                .push(http_endpoint_observability.clone())
+                .push(http_endpoint_identity_headers.clone())
+                // Ensures that the request's URI is in the proper form.
+                .push(http::normalize_uri::layer())
+                //.push_per_service(svc::layers().boxed_http_request())
+                //.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .push_pending()
+                .push_per_service(svc::layers().push_lock())
+                .spawn_cache(cache_capacity, cache_max_idle_age)
+                .push_trace(|endpoint: &HttpEndpoint| {
+                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                })
+                .check_service::<HttpEndpoint>();
+
             // Resolves each target via the control plane on a background task,
             // buffering results.
             //
@@ -201,6 +230,9 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_endpoint
+                .clone()
+                //.push_per_service(svc::layers().boxed_http_request())
+                //.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 .push_spawn_ready()
                 .check_service::<HttpEndpoint>()
                 .push(discover)
@@ -228,7 +260,6 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets the per-route response classifier as a request
                 // extension.
                 .push(classify::layer())
-                //.push_per_service(svc::layers().boxed_http_response())
                 .check_new_clone_service::<dst::Route>();
 
             // Routes `Logical` targets to a cached `Profile` stack, i.e. so
@@ -303,29 +334,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Logical>()
                 .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.dst));
 
-            // Caches clients that bypass discovery/balancing.
-            //
-            // This is effectively the same as the endpoint stack; but the
-            // client layer captures the requst body type (via PhantomData), so
-            // the stack cannot be shared directly.
-            let http_forward_cache = tcp_connect
-                .push(http::client::layer(connect.h2_settings))
-                .push(reconnect::layer({
-                    let backoff = connect.backoff.clone();
-                    move |_| Ok(backoff.stream())
-                }))
-                .push(http::normalize_uri::layer())
-                .push(http_endpoint_observability.clone())
-                .push(http_endpoint_identity_headers.clone())
-                .push_pending()
-                .push_per_service(svc::layers().boxed_http_response()
-                .push_lock())
-                .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push_trace(|endpoint: &HttpEndpoint| {
-                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                })
-                .check_service::<HttpEndpoint>();
-
             let http_admit_request = svc::layers()
                 // Ensures that load is not shed if the inner service is in-use.
                 .push_oneshot()
@@ -354,9 +362,12 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<(Logical, HttpEndpoint)>()
                 .push(fallback::Layer::new(
                     http_forward_cache
-                    .push_make_ready()
-                    .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
-                    .push_per_service(svc::layers().boxed_http_response())
+                        .push_make_ready()
+                        .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
+                        .push_per_service(
+                            svc::layers()
+                                .boxed_http_response()
+                        )
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
                 .check_service::<(Logical, HttpEndpoint)>()

@@ -1,4 +1,4 @@
-use super::boxed::{Data, Payload};
+use super::boxed::Payload;
 use futures::{future, Future, Poll};
 use linkerd2_error::Error;
 use linkerd2_stack::Proxy;
@@ -21,7 +21,7 @@ impl<Req, B, S, P> Proxy<Req, S> for BoxResponse<P>
 where
     P: Proxy<Req, S, Response = http::Response<B>>,
     S: tower::Service<P::Request>,
-    B: hyper::body::Payload<Data = Data, Error = Error> + Send + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + Send + 'static,
 {
     type Request = P::Request;
     type Response = http::Response<Payload>;
@@ -36,7 +36,7 @@ where
 impl<S, Req, B> tower::Service<Req> for BoxResponse<S>
 where
     S: tower::Service<Req, Response = http::Response<B>>,
-    B: hyper::body::Payload<Data = Data, Error = Error> + Send + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + Send + 'static,
 {
     type Response = http::Response<Payload>;
     type Error = S::Error;

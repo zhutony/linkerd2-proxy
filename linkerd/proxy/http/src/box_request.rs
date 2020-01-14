@@ -26,7 +26,7 @@ impl<S, B> tower::Service<http::Request<B>> for BoxRequest<S>
 where
     B: hyper::body::Payload + Send + 'static,
     B::Error: Into<Error> + 'static,
-    S: tower::Service<http::Request<Payload<B::Data, B::Error>>>,
+    S: tower::Service<http::Request<Payload>>,
 {
     type Response = S::Response;
     type Error = S::Error;

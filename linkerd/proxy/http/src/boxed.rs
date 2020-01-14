@@ -1,7 +1,6 @@
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
 
-pub type Data = hyper::body::Chunk;
 pub type Response = http::Response<Payload>;
 pub type ResponseFuture = Box<dyn Future<Item = Response, Error = Error> + Send + 'static>;
 
@@ -31,7 +30,7 @@ impl<A, B> Clone for Layer<A, B> {
 impl<A, B> Layer<A, B>
 where
     A: 'static,
-    B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + 'static,
 {
     pub fn new() -> Self {
         Layer {
@@ -46,7 +45,7 @@ where
     S: tower::Service<http::Request<A>, Response = http::Response<B>> + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Into<Error> + 'static,
-    B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + 'static,
 {
     type Service = BoxedService<A>;
 
@@ -65,9 +64,15 @@ struct InnerFuture<F, B> {
     _marker: std::marker::PhantomData<fn() -> B>,
 }
 
-pub struct Payload<D = Data, E: Into<Error> = Error> {
-    inner: Box<dyn hyper::body::Payload<Data = D, Error = E> + Send + 'static>,
+pub struct Payload {
+    inner: Box<dyn hyper::body::Payload<Data = Data, Error = Error> + Send + 'static>,
 }
+
+pub struct Data {
+    inner: Box<dyn bytes::Buf + Send + 'static>,
+}
+
+struct InnerPayload<B: hyper::body::Payload>(B);
 
 struct NoPayload;
 
@@ -77,7 +82,7 @@ impl<A: 'static> BoxedService<A> {
         S: tower::Service<http::Request<A>, Response = http::Response<B>> + Send + 'static,
         S::Future: Send + 'static,
         S::Error: Into<Error> + 'static,
-        B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+        B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + 'static,
     {
         BoxedService(Box::new(Inner {
             service,
@@ -105,7 +110,7 @@ where
     S: tower::Service<http::Request<A>, Response = http::Response<B>>,
     S::Error: Into<Error> + 'static,
     S::Future: Send + 'static,
-    B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + 'static,
 {
     type Response = Response;
     type Error = Error;
@@ -128,7 +133,7 @@ impl<F, B> Future for InnerFuture<F, B>
 where
     F: Future<Item = http::Response<B>>,
     F::Error: Into<Error>,
-    B: hyper::body::Payload<Data = Data, Error = Error> + 'static,
+    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + 'static,
 {
     type Item = Response;
     type Error = Error;
@@ -147,25 +152,21 @@ impl Default for Payload {
     }
 }
 
-impl<D: bytes::Buf, E: Into<Error>> Payload<D, E> {
+impl Payload {
     pub fn new<B>(inner: B) -> Self
     where
-        D: Send + 'static,
-        B: hyper::body::Payload<Data = D, Error = E> + 'static,
+        B: hyper::body::Payload + 'static,
+        B::Error: Into<Error>,
     {
         Self {
-            inner: Box::new(inner),
+            inner: Box::new(InnerPayload(inner)),
         }
     }
 }
 
-impl<D, E> hyper::body::Payload for Payload<D, E>
-where
-    D: bytes::Buf + Send + 'static,
-    E: Into<Error> + 'static,
-{
-    type Data = D;
-    type Error = E;
+impl hyper::body::Payload for Payload {
+    type Data = Data;
+    type Error = Error;
 
     fn is_end_stream(&self) -> bool {
         self.inner.is_end_stream()
@@ -180,7 +181,46 @@ where
     }
 }
 
-impl<D, E: Into<Error>> std::fmt::Debug for Payload<D, E> {
+impl bytes::Buf for Data {
+    fn remaining(&self) -> usize {
+        self.inner.remaining()
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.inner.bytes()
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.inner.advance(n)
+    }
+}
+
+impl<B> hyper::body::Payload for InnerPayload<B>
+where
+    B: hyper::body::Payload,
+    B::Error: Into<Error>,
+{
+    type Data = Data;
+    type Error = Error;
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn poll_data(&mut self) -> Poll<Option<Self::Data>, Self::Error> {
+        let buf = try_ready!(self.0.poll_data().map_err(Into::into));
+        let data = buf.map(|buf| Data {
+            inner: Box::new(buf),
+        });
+        Ok(data.into())
+    }
+
+    fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, Self::Error> {
+        self.0.poll_trailers().map_err(Into::into)
+    }
+}
+
+impl std::fmt::Debug for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Payload").finish()
     }
