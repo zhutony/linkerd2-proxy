@@ -92,10 +92,10 @@ single_benchmark_run () {
           S=$(python -c "print(max($S, $T*1000.0))")
           P50=$(jq '.DurationHistogram.Percentiles | .[0] |.Value' < "$NAME-$r-rps.$ID.json")
           # index 1 is p75
-          P90=$(jq '.DurationHistogram.Percentiles | .[2] |.Value' < "$NAME-$r-rps.$ID.json")
-          P99=$(jq '.DurationHistogram.Percentiles | .[3] |.Value' < "$NAME-$r-rps.$ID.json")
-          P999=$(jq '.DurationHistogram.Percentiles | .[4] |.Value' < "$NAME-$r-rps.$ID.json")
-          STDDEV=$(jq '.DurationHistogram.StdDev' < "$NAME-$r-rps.$ID.json")
+          P90=$(jq '.DurationHistogram.Percentiles | .[2] |.Value' "$NAME-$r-rps.$ID.json")
+          P99=$(jq '.DurationHistogram.Percentiles | .[3] |.Value' "$NAME-$r-rps.$ID.json")
+          P999=$(jq '.DurationHistogram.Percentiles | .[4] |.Value' "$NAME-$r-rps.$ID.json")
+          STDDEV=$(jq '.DurationHistogram.StdDev' "$NAME-$r-rps.$ID.json")
           echo "$MODE $DIRECTION,$r,$l,$RUN_NAME,$i,$P50,$P90,$P99,$P999,$STDDEV,0" >> "full.$BRANCH_NAME.$ID.csv"
         done
         echo "$MODE $DIRECTION, $r, $l, $RUN_NAME, $S, 0" >> "summary.$BRANCH_NAME.$ID.txt"

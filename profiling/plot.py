@@ -40,12 +40,12 @@ except Exception as e:
 try:
     only_latency = g[[
         "branch", "p999 latency (ms)", "stddev"]][g["p999 latency (ms)"] > 0]
-    print(only_latency)
     rearrange_latency = only_latency.pivot_table(
         index=indices, columns="branch", values=["p999 latency (ms)", "stddev"], aggfunc={'p999 latency (ms)': np.mean, 'stddev': np.mean})
-    print(rearrange_latency)
-    rearrange_latency.plot(kind="bar", logy=args.logy, title="p999 Latency (ms)", figsize=(
-        28, 3), fontsize=7, yerr=rearrange_latency[["stddev"]])  # increase figsize x value if labels overlap
+    errs = rearrange_latency[["stddev"]].rename(
+        columns={'stddev': "p999 latency (ms)"}, inplace=False)
+    rearrange_latency[["p999 latency (ms)"]].plot(kind="bar", logy=args.logy, title="p999 Latency (ms)", figsize=(
+        28, 3), fontsize=7, yerr=errs)  # increase figsize x value if labels overlap
     plt.xticks(rotation=0)
     outfile_latency = args.outputprefix + "latency.png"
     print("Save graph to", outfile_latency)
