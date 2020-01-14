@@ -160,6 +160,8 @@ impl<A: OrigDstAddr> Config<A> {
                 // communicating with other proxies); though HTTP/1.x fallback
                 // is supported as needed.
                 .push(http::client::layer(connect.h2_settings))
+                .push_per_service(svc::layers().boxed_http_request())
+                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 // Re-establishes a connection when the client fails.
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
@@ -192,6 +194,8 @@ impl<A: OrigDstAddr> Config<A> {
                 // communicating with other proxies); though HTTP/1.x fallback
                 // is supported as needed.
                 .push(http::client::layer(connect.h2_settings))
+                // .push_per_service(svc::layers().boxed_http_request())
+                // .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 // Re-establishes a connection when the client fails.
                 .push(reconnect::layer({
                     let backoff = connect.backoff.clone();
@@ -201,8 +205,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(http_endpoint_identity_headers.clone())
                 // Ensures that the request's URI is in the proper form.
                 .push(http::normalize_uri::layer())
-                //.push_per_service(svc::layers().boxed_http_request())
-                //.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 .push_pending()
                 .push_per_service(svc::layers().push_lock())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
