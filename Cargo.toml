@@ -51,6 +51,7 @@ debug = false
 webpki = { git = "https://github.com/seanmonstar/webpki", branch = "cert-dns-names-0.21" }
 hyper = { git = "https://github.com/hawkw/hyper", branch = "eliza/tracing-test2"}
 h2 = { git = "https://github.com/hyperium/h2", branch = "eliza/tracing-test" }
+tokio = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
 tokio-io = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
 tokio-sync = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
 tokio-tcp = { git = "https://github.com/tokio-rs/tokio", branch = "eliza/tracing-test" }
