@@ -37,7 +37,7 @@ which fortio &> /dev/null || ( echo "fortio not found: Add the bin folder of you
 trap '{ killall iperf fortio >& /dev/null; }' EXIT
 
 # Summary table header
-echo "Test, target req/s, req len, branch, p999 latency (ms), GBit/s" > "summary.$RUN_NAME.txt"
+echo "Test, target req/s, req len, branch, p999 latency (ms), GBit/s" > "summary.$BRANCH_NAME.$ID.txt"
 
 single_benchmark_run () {
   # run benchmark utilities in background, only proxy runs in foreground
@@ -67,7 +67,7 @@ single_benchmark_run () {
     if [ -z "$T" ]; then
       T="0"
     fi
-    echo "TCP $DIRECTION, 0, 0, $RUN_NAME, 0, $T" >> "summary.$RUN_NAME.txt"
+    echo "TCP $DIRECTION, 0, 0, $RUN_NAME, 0, $T" >> "summary.$BRANCH_NAME.$ID.txt"
   else
     RPS="$HTTP_RPS"
     XARG=""
@@ -89,7 +89,7 @@ single_benchmark_run () {
           fi
           S=$(python -c "print(max($S, $T*1000.0))")
         done
-        echo "$MODE $DIRECTION, $r, $l, $RUN_NAME, $S, 0" >> "summary.$RUN_NAME.txt"
+        echo "$MODE $DIRECTION, $r, $l, $RUN_NAME, $S, 0" >> "summary.$BRANCH_NAME.$ID.txt"
       done
     done
   fi
@@ -133,5 +133,5 @@ fi
 echo "Benchmark results (display with 'head -vn-0 *$ID.txt *$ID.json | less' or compare them with ./plot.py):"
 ls ./*$ID*.txt
 echo SUMMARY:
-cat "summary.$RUN_NAME.txt"
+cat "summary.$BRANCH_NAME.$ID.txt"
 echo "Run 'fortio report' and open http://localhost:8080/ to display the HTTP/gRPC graphs"
