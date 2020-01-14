@@ -23,6 +23,12 @@ pub trait HasSettings {
     fn http_settings(&self) -> &Settings;
 }
 
+impl HasSettings for Settings {
+    fn http_settings(&self) -> &Settings {
+        self
+    }
+}
+
 // ===== impl Settings =====
 
 impl Settings {

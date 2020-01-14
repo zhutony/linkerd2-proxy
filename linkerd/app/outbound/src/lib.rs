@@ -182,22 +182,6 @@ impl<A: OrigDstAddr> Config<A> {
                     })
             };
 
-            // Caches clients that bypass discovery/balancing.
-            //
-            // This is effectively the same as the endpoint stack; but the
-            // client layer captures the requst body type (via PhantomData), so
-            // the stack cannot be shared directly.
-            let http_forward_cache = http_endpoint.clone()
-                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
-                .push_per_service(http::box_request::Layer::new())
-                .push_pending()
-                .push_per_service(svc::layers().push_lock())
-                .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push_trace(|endpoint: &HttpEndpoint| {
-                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                })
-                .check_service::<HttpEndpoint>();
-
             // Resolves each target via the control plane on a background task,
             // buffering results.
             //
@@ -217,6 +201,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_endpoint
+                .clone()
                 .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
                 .push_per_service(http::box_request::Layer::new())
                 .push_spawn_ready()
@@ -229,6 +214,22 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_service(svc::lock::Layer::<LogicalError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|c: &Concrete| info_span!("balance", addr = %c.dst));
+
+            // Caches clients that bypass discovery/balancing.
+            //
+            // This is effectively the same as the endpoint stack; but the
+            // client layer captures the requst body type (via PhantomData), so
+            // the stack cannot be shared directly.
+            let http_forward_cache = http_endpoint
+                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .push_per_service(http::box_request::Layer::new())
+                .push_pending()
+                .push_per_service(svc::layers().push_lock())
+                .spawn_cache(cache_capacity, cache_max_idle_age)
+                .push_trace(|endpoint: &HttpEndpoint| {
+                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                })
+                .check_service::<HttpEndpoint>();
 
             let http_profile_route_proxy = svc::proxies()
                 // Records metrics within retries.
@@ -274,13 +275,10 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_new_service_routes::<(), Logical>()
                 .new_service(());
 
-            //.push_per_service(svc::layers().boxed_http_response())
-            // .check_service::<Logical>()
-            // .push(
+            // .push_per_service(
             //     fallback::Layer::new(
             //         http_balancer_cache
-            //             .push_per_service(svc::layers().boxed_http())
-            //             .push_map_target(Concrete::from)
+            //             .push_per_service(svc::layers().boxed_http_response())
             //             .into_inner(),
             //     )
             //     .on_error::<DiscoveryRejected>(),
@@ -341,10 +339,12 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer());
 
             let http_server = http_logical_router
+                .push_per_service(svc::layers().boxed_http_response())
+                .check_service::<Logical>()
                 .check_service::<Logical>()
                 .push_make_ready()
                 .push_map_target(|(l, _): (Logical, HttpEndpoint)| l)
-                .push_per_service(svc::layers().boxed_http_response())
+                //.push_per_service(svc::layers().boxed_http_response())
                 .check_service::<(Logical, HttpEndpoint)>()
                 .push(fallback::Layer::new(
                     http_forward_cache

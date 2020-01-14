@@ -19,34 +19,30 @@ use std::sync::Arc;
 #[derive(Copy, Clone, Debug)]
 pub struct FromMetadata;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Logical {
-    pub dst: Addr,
-    pub settings: http::Settings,
-}
+pub type Logical = Target<HttpEndpoint>;
+
+pub type Concrete = Target<Logical>;
 
 #[derive(Clone, Debug)]
-pub struct LogicalOrFallbackTarget(tls::accept::Meta);
+pub struct RequestTarget(tls::accept::Meta);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Profile(Addr);
 
 #[derive(Clone, Debug)]
-pub struct ProfileTarget;
+pub struct TargetProfile;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Concrete {
-    pub dst: Addr,
-    // Concrete endpoints may not be shared across logical endpoints, since the
-    // logical authority is used when registering metrics, etc.
-    pub logical: Logical,
+pub struct Target<T> {
+    pub addr: Addr,
+    pub inner: T,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpEndpoint {
     pub addr: SocketAddr,
+    pub settings: http::Settings,
     pub identity: tls::PeerIdentity,
-    pub concrete: Concrete,
     pub metadata: Metadata,
 }
 
@@ -54,6 +50,15 @@ pub struct HttpEndpoint {
 pub struct TcpEndpoint {
     pub addr: SocketAddr,
     pub identity: tls::PeerIdentity,
+}
+
+impl<T> Target<T> {
+    pub fn map<U, F: Fn(T) -> U>(self, map: F) -> Target<U> {
+        Target {
+            addr: self.addr,
+            inner: (map)(self.inner),
+        }
+    }
 }
 
 // === impl HttpEndpoint ===
@@ -64,7 +69,7 @@ impl HttpEndpoint {
             return false;
         }
 
-        match self.concrete.logical.settings {
+        match self.settings {
             http::Settings::Http2 => false,
             http::Settings::Http1 {
                 keep_alive: _,
@@ -85,7 +90,7 @@ impl std::hash::Hash for HttpEndpoint {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.addr.hash(state);
         self.identity.hash(state);
-        self.concrete.hash(state);
+        self.settings.hash(state);
         // Ignore metadata.
     }
 }
@@ -104,18 +109,25 @@ impl connect::ConnectAddr for HttpEndpoint {
 
 impl http::settings::HasSettings for HttpEndpoint {
     fn http_settings(&self) -> &http::Settings {
-        &self.concrete.logical.settings
+        &self.settings
     }
 }
 
-impl http::normalize_uri::ShouldNormalizeUri for HttpEndpoint {
+impl<T:  http::settings::HasSettings> http::settings::HasSettings for Target<T> {
+    fn http_settings(&self) -> &http::Settings {
+        self.inner.http_settings()
+    }
+}
+
+
+impl<T: http::settings::HasSettings> http::normalize_uri::ShouldNormalizeUri for Target<T> {
     fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
         if let http::Settings::Http1 {
             was_absolute_form: false,
             ..
-        } = self.concrete.logical.settings
+        } = *self.inner.http_settings()
         {
-            return Some(self.concrete.dst.to_http_authority());
+            return Some(self.addr.to_http_authority());
         }
         None
     }
@@ -161,16 +173,15 @@ impl tap::Inspect for HttpEndpoint {
     }
 }
 
-impl MapEndpoint<Concrete, Metadata> for FromMetadata {
-    type Out = HttpEndpoint;
+impl MapEndpoint<Target<http::Settings>, Metadata> for FromMetadata {
+    type Out = Target<HttpEndpoint>;
 
     fn map_endpoint(
         &self,
-        concrete: &Concrete,
+        target: &Target<http::Settings>,
         addr: SocketAddr,
         metadata: Metadata,
     ) -> HttpEndpoint {
-        tracing::trace!(%concrete, %addr, ?metadata, "endpoint");
         let identity = metadata
             .identity()
             .cloned()
@@ -178,20 +189,21 @@ impl MapEndpoint<Concrete, Metadata> for FromMetadata {
             .unwrap_or_else(|| {
                 Conditional::None(tls::ReasonForNoPeerName::NotProvidedByServiceDiscovery.into())
             });
-        HttpEndpoint {
+
+        target.clone().map(|settings| HttpEndpoint {
             addr,
             identity,
             metadata,
-            concrete: concrete.clone(),
-        }
+            settings,
+        })
     }
 }
 
-impl Into<EndpointLabels> for HttpEndpoint {
+impl Into<EndpointLabels> for Target<HttpEndpoint> {
     fn into(self) -> EndpointLabels {
         use linkerd2_app_core::metric_labels::{Direction, TlsId};
         EndpointLabels {
-            authority: Some(self.concrete.logical.dst.to_http_authority()),
+            authority: Some(self.addr.to_http_authority()),
             direction: Direction::Out,
             tls_id: self.identity.as_ref().map(|id| TlsId::ServerId(id.clone())),
             labels: prefix_labels("dst", self.metadata.labels().into_iter()),
@@ -244,21 +256,21 @@ impl std::fmt::Display for Concrete {
 
 // === impl LogicalOrFallbackTarget ===
 
-impl From<tls::accept::Meta> for LogicalOrFallbackTarget {
+impl From<tls::accept::Meta> for RequestTarget {
     fn from(accept: tls::accept::Meta) -> Self {
-        LogicalOrFallbackTarget(accept)
+        RequestTarget(accept)
     }
 }
 
-impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
-    type Key = (Logical, HttpEndpoint);
+impl<B> router::Key<http::Request<B>> for RequestTarget {
+    type Key = Target<HttpEndpoint>;
 
     fn key(&self, req: &http::Request<B>) -> Self::Key {
         use linkerd2_app_core::{
             http_request_authority_addr, http_request_host_addr, http_request_l5d_override_dst_addr,
         };
-        tracing::debug!(headers = ?req.headers());
-        let dst = http_request_l5d_override_dst_addr(req)
+
+        let addr = http_request_l5d_override_dst_addr(req)
             .map(|addr| {
                 tracing::debug!(%addr, "using dst-override");
                 addr
@@ -283,15 +295,12 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
 
         let settings = http::Settings::from_request(req);
 
-        let logical = Logical {
-            dst: dst.clone(),
-            settings,
-        };
+        tracing::debug!(headers = ?req.headers(), uri = %req.uri(), target.addr = %addr, http.settings = ?settings, "Setting target for request");
 
-        let fallback = HttpEndpoint {
+        let inner = HttpEndpoint {
+            settings,
             addr: self.0.addrs.target_addr(),
             metadata: Metadata::empty(),
-            concrete: logical.clone().into(),
             identity: identity_from_header(req, L5D_REQUIRE_ID)
                 .map(Conditional::Some)
                 .unwrap_or_else(|| {
@@ -301,43 +310,43 @@ impl<B> router::Key<http::Request<B>> for LogicalOrFallbackTarget {
                 }),
         };
 
-        (logical, fallback)
+        Target { addr, inner }
     }
 }
 
-impl http::canonicalize::Target for Logical {
+impl<T> http::canonicalize::Target for Target<T> {
     fn addr(&self) -> &Addr {
-        &self.dst
+        &self.addr
     }
 
     fn addr_mut(&mut self) -> &mut Addr {
-        &mut self.dst
+        &mut self.addr
     }
 }
 
-impl<'t> From<&'t Logical> for ::http::header::HeaderValue {
-    fn from(logical: &'t Logical) -> Self {
-        ::http::header::HeaderValue::from_str(&logical.dst.to_string())
+impl<'t, T> From<&'t Target<T>> for ::http::header::HeaderValue {
+    fn from(target: &'t Target<T>) -> Self {
+        ::http::header::HeaderValue::from_str(&target.addr.to_string())
             .expect("addr must be a valid header")
     }
 }
 
-impl http::normalize_uri::ShouldNormalizeUri for Logical {
+impl http::normalize_uri::ShouldNormalizeUri for Target<HttpEndpoint> {
     fn should_normalize_uri(&self) -> Option<http::uri::Authority> {
         if let http::Settings::Http1 {
             was_absolute_form: false,
             ..
-        } = self.settings
+        } = self.inner.settings
         {
-            return Some(self.dst.to_http_authority());
+            return Some(self.addr.to_http_authority());
         }
         None
     }
 }
 
-impl profiles::OverrideDestination for Concrete {
+impl<T> profiles::OverrideDestination for Target<T> {
     fn dst_mut(&mut self) -> &mut Addr {
-        &mut self.dst
+        &mut self.addr
     }
 }
 
@@ -352,11 +361,11 @@ impl From<Logical> for Concrete {
 
 // === impl ProfileTarget ===
 
-impl router::Key<Logical> for ProfileTarget {
+impl<T> router::Key<Target<T>> for TargetProfile {
     type Key = Profile;
 
-    fn key(&self, t: &Logical) -> Self::Key {
-        Profile(t.dst.clone())
+    fn key(&self, t: &Target<T>) -> Self::Key {
+        Profile(t.addr.clone())
     }
 }
 

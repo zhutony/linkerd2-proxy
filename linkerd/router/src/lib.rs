@@ -1,12 +1,11 @@
 use futures::{try_ready, Future, Poll};
 use linkerd2_error::Error;
 use linkerd2_stack::NewService;
-use std::hash::Hash;
 use tower::util::{Oneshot, ServiceExt};
 use tracing::trace;
 
 pub trait Key<T> {
-    type Key: Clone + Eq + Hash;
+    type Key: Clone;
 
     fn key(&self, t: &T) -> Self::Key;
 }
@@ -133,7 +132,7 @@ where
 
 impl<T, K, F> Key<T> for KeyFn<F>
 where
-    K: Clone + Eq + Hash,
+    K: Clone,
     F: Fn(&T) -> K,
 {
     type Key = K;
