@@ -2,29 +2,45 @@ use super::boxed::Payload;
 use futures::Poll;
 use linkerd2_error::Error;
 
-#[derive(Clone, Debug)]
-pub struct Layer(());
+#[derive(Debug)]
+pub struct Layer<B>(std::marker::PhantomData<fn(B)>);
 
 #[derive(Clone, Debug)]
-pub struct BoxRequest<S>(S);
+pub struct BoxRequest<S, B>(S, std::marker::PhantomData<fn(B)>);
 
-impl Layer {
+impl<B> Layer<B>
+where
+    B: hyper::body::Payload + 'static,
+    B::Error: Into<Error> + 'static,
+{
     pub fn new() -> Self {
-        Layer(())
+        Layer(std::marker::PhantomData)
     }
 }
 
-impl<S> tower::layer::Layer<S> for Layer {
-    type Service = BoxRequest<S>;
+impl<B> Clone for Layer<B> {
+    fn clone(&self) -> Self {
+        Layer(self.0)
+    }
+}
+
+impl<S, B> tower::layer::Layer<S> for Layer<B>
+where
+    B: hyper::body::Payload + 'static,
+    B::Error: Into<Error> + 'static,
+    S: tower::Service<http::Request<Payload>>,
+    BoxRequest<S, B>: tower::Service<http::Request<B>>,
+{
+    type Service = BoxRequest<S, B>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        BoxRequest(inner)
+        BoxRequest(inner, self.0)
     }
 }
 
-impl<S, B> tower::Service<http::Request<B>> for BoxRequest<S>
+impl<S, B> tower::Service<http::Request<B>> for BoxRequest<S, B>
 where
-    B: hyper::body::Payload + Send + 'static,
+    B: hyper::body::Payload + 'static,
     B::Error: Into<Error> + 'static,
     S: tower::Service<http::Request<Payload>>,
 {

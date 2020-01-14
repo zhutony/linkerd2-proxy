@@ -131,80 +131,65 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Registers the stack with Tap, Metrics, and OpenCensus tracing
             // export.
-            let http_endpoint_observability = svc::layers()
-                .push(tap_layer.clone())
-                .push(http::metrics::Layer::<_, classify::Response>::new(
-                    metrics.http_endpoint.clone(),
-                ))
-                .push_per_service(trace_context::layer(
-                    span_sink
-                        .clone()
-                        .map(|sink| SpanConverter::client(sink, trace_labels())),
-                ));
+            let http_endpoint = {
+                let observability = svc::layers()
+                    .push(tap_layer.clone())
+                    .push(http::metrics::Layer::<_, classify::Response>::new(
+                        metrics.http_endpoint.clone(),
+                    ))
+                    .push_per_service(trace_context::layer(
+                        span_sink
+                            .clone()
+                            .map(|sink| SpanConverter::client(sink, trace_labels())),
+                    ));
 
-            // Checks the headers to validate that a client-specified required
-            // identity matches the configured identity.
-            let http_endpoint_identity_headers = svc::layers()
-                .push_per_service(
-                    svc::layers()
-                        .push(http::strip_header::response::layer(L5D_REMOTE_IP))
-                        .push(http::strip_header::response::layer(L5D_SERVER_ID))
-                        .push(http::strip_header::request::layer(L5D_REQUIRE_ID)),
-                )
-                .push(require_identity_on_endpoint::layer());
+                // Checks the headers to validate that a client-specified required
+                // identity matches the configured identity.
+                let identity_headers = svc::layers()
+                    .push_per_service(
+                        svc::layers()
+                            .push(http::strip_header::response::layer(L5D_REMOTE_IP))
+                            .push(http::strip_header::response::layer(L5D_SERVER_ID))
+                            .push(http::strip_header::request::layer(L5D_REQUIRE_ID)),
+                    )
+                    .push(require_identity_on_endpoint::layer());
 
-            let http_endpoint = tcp_connect
-                .clone()
-                // Initiates an HTTP client on the underlying transport.
-                // Prior-knowledge HTTP/2 is typically used (i.e. when
-                // communicating with other proxies); though HTTP/1.x fallback
-                // is supported as needed.
-                .push(http::client::layer(connect.h2_settings))
-                .push_per_service(svc::layers().boxed_http_request())
-                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
-                // Re-establishes a connection when the client fails.
-                .push(reconnect::layer({
-                    let backoff = connect.backoff.clone();
-                    move |_| Ok(backoff.stream())
-                }))
-                .push(http_endpoint_observability.clone())
-                .push(http_endpoint_identity_headers.clone())
-                // Ensures that the request's URI is in the proper form.
-                .push(http::normalize_uri::layer())
-                // Upgrades HTTP/1 requests to be transported over HTTP/2
-                // connections.
-                //
-                // This sets headers so that the inbound proxy can downgrade the
-                // request properly.
-                .push(orig_proto_upgrade::layer())
-                .check_service::<HttpEndpoint>()
-                .push_trace(|endpoint: &HttpEndpoint| {
-                    info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
-                });
+                tcp_connect
+                    .clone()
+                    // Initiates an HTTP client on the underlying transport.
+                    // Prior-knowledge HTTP/2 is typically used (i.e. when
+                    // communicating with other proxies); though HTTP/1.x fallback
+                    // is supported as needed.
+                    .push(http::client::layer(connect.h2_settings))
+                    // Re-establishes a connection when the client fails.
+                    .push(reconnect::layer({
+                        let backoff = connect.backoff.clone();
+                        move |_| Ok(backoff.stream())
+                    }))
+                    .push(observability.clone())
+                    .push(identity_headers.clone())
+                    // Ensures that the request's URI is in the proper form.
+                    .push(http::normalize_uri::layer())
+                    // Upgrades HTTP/1 requests to be transported over HTTP/2
+                    // connections.
+                    //
+                    // This sets headers so that the inbound proxy can downgrade the
+                    // request properly.
+                    .push(orig_proto_upgrade::layer())
+                    .check_service::<HttpEndpoint>()
+                    .push_trace(|endpoint: &HttpEndpoint| {
+                        info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                    })
+            };
 
             // Caches clients that bypass discovery/balancing.
             //
             // This is effectively the same as the endpoint stack; but the
             // client layer captures the requst body type (via PhantomData), so
             // the stack cannot be shared directly.
-            let http_forward_cache = tcp_connect
-                .clone()
-                // Initiates an HTTP client on the underlying transport.
-                // Prior-knowledge HTTP/2 is typically used (i.e. when
-                // communicating with other proxies); though HTTP/1.x fallback
-                // is supported as needed.
-                .push(http::client::layer(connect.h2_settings))
-                // .push_per_service(svc::layers().boxed_http_request())
-                // .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
-                // Re-establishes a connection when the client fails.
-                .push(reconnect::layer({
-                    let backoff = connect.backoff.clone();
-                    move |_| Ok(backoff.stream())
-                }))
-                .push(http_endpoint_observability.clone())
-                .push(http_endpoint_identity_headers.clone())
-                // Ensures that the request's URI is in the proper form.
-                .push(http::normalize_uri::layer())
+            let http_forward_cache = http_endpoint.clone()
+                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .push_per_service(http::box_request::Layer::new())
                 .push_pending()
                 .push_per_service(svc::layers().push_lock())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
@@ -232,9 +217,8 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_endpoint
-                .clone()
-                //.push_per_service(svc::layers().boxed_http_request())
-                //.check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .push_per_service(http::box_request::Layer::new())
                 .push_spawn_ready()
                 .check_service::<HttpEndpoint>()
                 .push(discover)
