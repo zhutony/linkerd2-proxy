@@ -63,9 +63,10 @@ where
     }
 }
 
-impl<M> svc::Service<HttpEndpoint> for MakeSvc<M>
+impl<T, M> svc::Service<T> for MakeSvc<M>
 where
-    M: svc::Service<HttpEndpoint>,
+    T: tls::HasPeerIdentity,
+    M: svc::Service<T>,
 {
     type Response = RequireIdentity<M::Response>;
     type Error = M::Error;
@@ -75,7 +76,7 @@ where
         self.inner.poll_ready()
     }
 
-    fn call(&mut self, target: HttpEndpoint) -> Self::Future {
+    fn call(&mut self, target: T) -> Self::Future {
         // After the inner service is made, we want to wrap that service
         // with a filter that compares the target's `peer_identity` and
         // `l5d_require_id` header if present

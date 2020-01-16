@@ -6,7 +6,7 @@
 #![deny(warnings, rust_2018_idioms)]
 
 pub use self::endpoint::{
-    Concrete, HttpEndpoint, Logical, LogicalOrFallbackTarget, Profile, ProfileTarget, TcpEndpoint,
+    Concrete, HttpEndpoint, Logical, LogicalKey, Profile, ProfileKey, Target, TcpEndpoint,
 };
 use futures::future;
 use linkerd2_app_core::{
@@ -80,7 +80,7 @@ impl<A: OrigDstAddr> Config<A> {
     ) -> Result<Outbound, Error>
     where
         A: Send + 'static,
-        R: Resolve<Concrete, Endpoint = proxy::api_resolve::Metadata>
+        R: Resolve<Target<http::Settings>, Endpoint = proxy::api_resolve::Metadata>
             + Clone
             + Send
             + Sync
@@ -176,9 +176,9 @@ impl<A: OrigDstAddr> Config<A> {
                     // This sets headers so that the inbound proxy can downgrade the
                     // request properly.
                     .push(orig_proto_upgrade::layer())
-                    .check_service::<HttpEndpoint>()
-                    .push_trace(|endpoint: &HttpEndpoint| {
-                        info_span!("endpoint", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                    .check_service::<Target<HttpEndpoint>>()
+                    .push_trace(|endpoint: &Target<HttpEndpoint>| {
+                        info_span!("endpoint", peer.addr = %endpoint.inner.addr, peer.id = ?endpoint.inner.identity)
                     })
             };
 
@@ -202,18 +202,19 @@ impl<A: OrigDstAddr> Config<A> {
             // Builds a balancer for each concrete destination.
             let http_balancer_cache = http_endpoint
                 .clone()
-                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .check_make_service::<Target<HttpEndpoint>, http::Request<http::boxed::Payload>>()
                 .push_per_service(http::box_request::Layer::new())
                 .push_spawn_ready()
-                .check_service::<HttpEndpoint>()
+                .check_service::<Target<HttpEndpoint>>()
                 .push(discover)
                 .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
+                .push_map_target(|t: Concrete| t.map(|c| c.inner.settings))
                 .check_service::<Concrete>()
                 .push_pending()
                 // Shares the balancer, ensuring discovery errors are propagated.
                 .push_per_service(svc::lock::Layer::<LogicalError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push_trace(|c: &Concrete| info_span!("balance", addr = %c.dst));
+                .push_trace(|c: &Concrete| info_span!("balance", addr = %c.addr));
 
             // Caches clients that bypass discovery/balancing.
             //
@@ -221,15 +222,15 @@ impl<A: OrigDstAddr> Config<A> {
             // client layer captures the requst body type (via PhantomData), so
             // the stack cannot be shared directly.
             let http_forward_cache = http_endpoint
-                .check_make_service::<HttpEndpoint, http::Request<http::boxed::Payload>>()
+                .check_make_service::<Target<HttpEndpoint>, http::Request<http::boxed::Payload>>()
                 .push_per_service(http::box_request::Layer::new())
                 .push_pending()
                 .push_per_service(svc::layers().push_lock())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push_trace(|endpoint: &HttpEndpoint| {
-                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.identity)
+                .push_trace(|endpoint: &Target<HttpEndpoint>| {
+                    info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.inner.identity)
                 })
-                .check_service::<HttpEndpoint>();
+                .check_service::<Target<HttpEndpoint>>();
 
             let http_profile_route_proxy = svc::proxies()
                 // Records metrics within retries.
@@ -271,7 +272,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
-                .push(router::Layer::new(|()| ProfileTarget))
+                .push(router::Layer::new(|()| ProfileKey))
                 .check_new_service_routes::<(), Logical>()
                 .new_service(());
 
@@ -316,7 +317,7 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
                 .check_service::<Logical>()
-                .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.dst));
+                .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.addr));
 
             let http_admit_request = svc::layers()
                 // Ensures that load is not shed if the inner service is in-use.
@@ -340,26 +341,26 @@ impl<A: OrigDstAddr> Config<A> {
 
             let http_server = http_logical_router
                 .push_per_service(svc::layers().boxed_http_response())
-                .check_service::<Logical>()
-                .check_service::<Logical>()
                 .push_make_ready()
-                .push_map_target(|(l, _): (Logical, HttpEndpoint)| l)
                 //.push_per_service(svc::layers().boxed_http_response())
-                .check_service::<(Logical, HttpEndpoint)>()
+                .check_service::<Logical>()
                 .push(fallback::Layer::new(
                     http_forward_cache
                         .push_make_ready()
-                        .push_map_target(|(_, e): (Logical, HttpEndpoint)| e)
+                        .push_map_target(|l: Logical| Logical {
+                            addr: l.addr.into(),
+                            inner: l.inner,
+                        })
                         .push_per_service(
                             svc::layers()
                                 .boxed_http_response()
                         )
                         .into_inner()
                 ).with_predicate(LogicalError::is_discovery_rejected))
-                .check_service::<(Logical, HttpEndpoint)>()
+                .check_service::<Logical>()
                 .push_make_ready()
                 .push_timeout(service_acquisition_timeout)
-                .push(router::Layer::new(LogicalOrFallbackTarget::from))
+                .push(router::Layer::new(LogicalKey::from))
                 // Used by tap.
                 .push_http_insert_target()
                 .push_per_service(http_admit_request)
@@ -396,11 +397,11 @@ impl<A: OrigDstAddr> Config<A> {
 #[derive(Copy, Clone, Debug)]
 struct TransportLabels;
 
-impl transport::metrics::TransportLabels<HttpEndpoint> for TransportLabels {
+impl transport::metrics::TransportLabels<Target<HttpEndpoint>> for TransportLabels {
     type Labels = transport::labels::Key;
 
-    fn transport_labels(&self, endpoint: &HttpEndpoint) -> Self::Labels {
-        transport::labels::Key::connect("outbound", endpoint.identity.as_ref())
+    fn transport_labels(&self, endpoint: &Target<HttpEndpoint>) -> Self::Labels {
+        transport::labels::Key::connect("outbound", endpoint.inner.identity.as_ref())
     }
 }
 

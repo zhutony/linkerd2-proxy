@@ -1,4 +1,4 @@
-use super::HttpEndpoint;
+use super::{HttpEndpoint, Target};
 use crate::proxy::http::{orig_proto, settings::Settings};
 use crate::svc;
 use futures::{try_ready, Future, Poll};
@@ -32,25 +32,25 @@ impl<M> svc::Layer<M> for Layer {
 
 // === impl MakeSvc ===
 
-impl<N> svc::NewService<HttpEndpoint> for MakeSvc<N>
+impl<N> svc::NewService<Target<HttpEndpoint>> for MakeSvc<N>
 where
-    N: svc::NewService<HttpEndpoint>,
+    N: svc::NewService<Target<HttpEndpoint>>,
 {
     type Service = svc::Either<orig_proto::Upgrade<N::Service>, N::Service>;
 
-    fn new_service(&self, mut endpoint: HttpEndpoint) -> Self::Service {
-        if !endpoint.can_use_orig_proto() {
+    fn new_service(&self, mut endpoint: Target<HttpEndpoint>) -> Self::Service {
+        if !endpoint.inner.can_use_orig_proto() {
             trace!("Endpoint does not support transparent HTTP/2 upgrades");
             return svc::Either::B(self.inner.new_service(endpoint));
         }
 
-        let was_absolute = endpoint.concrete.logical.settings.was_absolute_form();
+        let was_absolute = endpoint.inner.settings.was_absolute_form();
         trace!(
             header = %orig_proto::L5D_ORIG_PROTO,
             %was_absolute,
             "Endpoint supports transparent HTTP/2 upgrades",
         );
-        endpoint.concrete.logical.settings = Settings::Http2;
+        endpoint.inner.settings = Settings::Http2;
 
         let mut upgrade = orig_proto::Upgrade::new(self.inner.new_service(endpoint));
         upgrade.absolute_form = was_absolute;
@@ -58,9 +58,9 @@ where
     }
 }
 
-impl<M> svc::Service<HttpEndpoint> for MakeSvc<M>
+impl<M> svc::Service<Target<HttpEndpoint>> for MakeSvc<M>
 where
-    M: svc::Service<HttpEndpoint>,
+    M: svc::Service<Target<HttpEndpoint>>,
 {
     type Response = svc::Either<orig_proto::Upgrade<M::Response>, M::Response>;
     type Error = M::Error;
@@ -70,17 +70,17 @@ where
         self.inner.poll_ready()
     }
 
-    fn call(&mut self, mut endpoint: HttpEndpoint) -> Self::Future {
-        let can_upgrade = endpoint.can_use_orig_proto();
+    fn call(&mut self, mut endpoint: Target<HttpEndpoint>) -> Self::Future {
+        let can_upgrade = endpoint.inner.can_use_orig_proto();
 
-        let was_absolute = endpoint.concrete.logical.settings.was_absolute_form();
+        let was_absolute = endpoint.inner.settings.was_absolute_form();
         if can_upgrade {
             trace!(
                 header = %orig_proto::L5D_ORIG_PROTO,
                 %was_absolute,
                 "Endpoint supports transparent HTTP/2 upgrades",
             );
-            endpoint.concrete.logical.settings = Settings::Http2;
+            endpoint.inner.settings = Settings::Http2;
         }
 
         let inner = self.inner.call(endpoint);

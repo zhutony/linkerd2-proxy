@@ -5,11 +5,10 @@ use linkerd2_app_core::{
     proxy::{api_resolve as api, resolve::recover},
     request_filter, Addr, DiscoveryRejected, Error, Recover,
 };
+use linkerd2_app_outbound::Target;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tower_grpc::{generic::client::GrpcService, Body, BoxBody, Code, Status};
-
-pub type Target = linkerd2_app_outbound::Concrete;
 
 pub type Resolve<S> = request_filter::Service<
     PermitConfiguredDsts,
@@ -29,11 +28,11 @@ where
     <S::ResponseBody as Body>::Data: Send,
     S::Future: Send,
 {
-    request_filter::Service::new::<Target>(
+    request_filter::Service::new(
         PermitConfiguredDsts::new(suffixes, nets),
-        recover::Resolve::new::<Target>(
+        recover::Resolve::new(
             backoff.into(),
-            api::Resolve::new::<Target>(service).with_context_token(token),
+            api::Resolve::new(service).with_context_token(token),
         ),
     )
 }
@@ -61,11 +60,11 @@ impl PermitConfiguredDsts {
     }
 }
 
-impl request_filter::RequestFilter<Target> for PermitConfiguredDsts {
+impl<T> request_filter::RequestFilter<Target<T>> for PermitConfiguredDsts {
     type Error = DiscoveryRejected;
 
-    fn filter(&self, t: Target) -> Result<Target, Self::Error> {
-        let permitted = match t.dst {
+    fn filter(&self, t: Target<T>) -> Result<Target<T>, Self::Error> {
+        let permitted = match t.addr {
             Addr::Name(ref name) => self
                 .name_suffixes
                 .iter()
