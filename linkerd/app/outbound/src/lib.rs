@@ -211,7 +211,7 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
                 .push_pending()
                 // Shares the balancer, ensuring discovery errors are propagated.
-                .push_per_service(svc::lock::Layer::<BalancerError>::new())
+                .push_per_service(svc::lock::Layer::<DiscoveryError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|c: &Concrete<http::Settings>| info_span!("balance", addr = %c.addr));
 
@@ -246,7 +246,7 @@ impl<A: OrigDstAddr> Config<A> {
                             .push_per_service(svc::layers().boxed_http_response())
                             .into_inner(),
                     )
-                    .with_predicate(BalancerError::is_discovery_rejected),
+                    .with_predicate(DiscoveryError::is_discovery_rejected),
                 )
                 .check_service::<Concrete<HttpEndpoint>>();
 
@@ -292,7 +292,7 @@ impl<A: OrigDstAddr> Config<A> {
                     },
                 ))
                 .push_pending()
-                .push_per_service(svc::lock::Layer::<BalancerError>::new())
+                .push_per_service(svc::lock::Layer::<DiscoveryError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
@@ -333,7 +333,7 @@ impl<A: OrigDstAddr> Config<A> {
                             .check_service::<Logical<HttpEndpoint>>()
                             .into_inner(),
                     )
-                    .on_error::<DiscoveryRejected>(),
+                    .with_predicate(DiscoveryError::is_discovery_rejected),
                 )
                 .check_service::<Logical<HttpEndpoint>>()
                 // Sets the canonical-dst header on all outbound requests.
@@ -444,40 +444,40 @@ pub fn trace_labels() -> HashMap<String, String> {
 }
 
 #[derive(Clone, Debug)]
-enum BalancerError {
+enum DiscoveryError {
     DiscoveryRejected,
     Inner(String),
 }
 
-impl std::fmt::Display for BalancerError {
+impl std::fmt::Display for DiscoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BalancerError::DiscoveryRejected => write!(f, "discovery rejected"),
-            BalancerError::Inner(e) => e.fmt(f),
+            DiscoveryError::DiscoveryRejected => write!(f, "discovery rejected"),
+            DiscoveryError::Inner(e) => e.fmt(f),
         }
     }
 }
 
-impl std::error::Error for BalancerError {}
+impl std::error::Error for DiscoveryError {}
 
-impl From<Error> for BalancerError {
+impl From<Error> for DiscoveryError {
     fn from(orig: Error) -> Self {
-        if let Some(inner) = orig.downcast_ref::<BalancerError>() {
+        if let Some(inner) = orig.downcast_ref::<DiscoveryError>() {
             return inner.clone();
         }
 
         if orig.is::<DiscoveryRejected>() {
-            return BalancerError::DiscoveryRejected;
+            return DiscoveryError::DiscoveryRejected;
         }
 
-        BalancerError::Inner(orig.to_string())
+        DiscoveryError::Inner(orig.to_string())
     }
 }
 
-impl BalancerError {
+impl DiscoveryError {
     fn is_discovery_rejected(err: &Error) -> bool {
         tracing::trace!(?err, "is_discovery_rejected");
-        if let Some(BalancerError::DiscoveryRejected) = err.downcast_ref::<BalancerError>() {
+        if let Some(DiscoveryError::DiscoveryRejected) = err.downcast_ref::<DiscoveryError>() {
             return true;
         }
 

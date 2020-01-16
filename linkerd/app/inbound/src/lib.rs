@@ -15,7 +15,7 @@ use linkerd2_app_core::{
     drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
     proxy::{
-        self,
+        self, fallback,
         http::{self, client, normalize_uri, orig_proto, profiles, strip_header},
         identity,
         server::{Protocol as ServerProtocol, Server},
@@ -167,6 +167,8 @@ impl<A: OrigDstAddr> Config<A> {
             // Routes targets to a Profile stack, i.e. so that profile
             // resolutions are shared even as the type of request may vary.
             let http_profile_cache = http_target_cache
+                .clone()
+                .push_per_service(svc::layers().boxed_http_request())
                 .check_service::<Target>()
                 // Provides route configuration without pdestination overrides.
                 .push(profiles::Layer::without_overrides(
@@ -215,6 +217,11 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer());
 
             let http_server = svc::stack(http_profile_cache)
+                .push_per_service(svc::layers().boxed_http_response())
+                .push_make_ready()
+                .push(fallback::Layer::new(http_target_cache.push_per_service(
+                    svc::layers().boxed_http_response().boxed_http_request(),
+                )))
                 .check_service::<Target>()
                 // Ensures that the built service is ready before it is returned
                 // to the router to dispatch a request.
