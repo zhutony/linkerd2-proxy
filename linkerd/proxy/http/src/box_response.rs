@@ -21,7 +21,8 @@ impl<Req, B, S, P> Proxy<Req, S> for BoxResponse<P>
 where
     P: Proxy<Req, S, Response = http::Response<B>>,
     S: tower::Service<P::Request>,
-    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + Send + 'static,
+    B: hyper::body::Payload + Send + 'static,
+    B::Error: Into<Error> + 'static,
 {
     type Request = P::Request;
     type Response = http::Response<Payload>;
@@ -36,7 +37,8 @@ where
 impl<S, Req, B> tower::Service<Req> for BoxResponse<S>
 where
     S: tower::Service<Req, Response = http::Response<B>>,
-    B: hyper::body::Payload<Data = hyper::body::Chunk, Error = Error> + Send + 'static,
+    B: hyper::body::Payload + Send + 'static,
+    B::Error: Into<Error> + 'static,
 {
     type Response = http::Response<Payload>;
     type Error = S::Error;

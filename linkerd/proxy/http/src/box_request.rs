@@ -5,7 +5,7 @@ use linkerd2_error::Error;
 #[derive(Debug)]
 pub struct Layer<B>(std::marker::PhantomData<fn(B)>);
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BoxRequest<S, B>(S, std::marker::PhantomData<fn(B)>);
 
 impl<B> Layer<B>
@@ -35,6 +35,12 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         BoxRequest(inner, self.0)
+    }
+}
+
+impl<S: Clone, B> Clone for BoxRequest<S, B> {
+    fn clone(&self) -> Self {
+        BoxRequest(self.0.clone(), self.1)
     }
 }
 

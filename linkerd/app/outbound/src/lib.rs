@@ -236,14 +236,13 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Concrete<HttpEndpoint>>();
 
             let http_concrete = http_balancer_cache
-                .push_make_ready()
                 .push_map_target(|c: Concrete<HttpEndpoint>| c.map(|l| l.map(|e| e.settings)))
                 .check_service::<Concrete<HttpEndpoint>>()
                 .push_per_service(svc::layers().boxed_http_response())
+                .push_make_ready()
                 .push(
                     fallback::Layer::new(
                         http_forward_cache
-                            .push_make_ready()
                             .push_per_service(svc::layers().boxed_http_response())
                             .into_inner(),
                     )
@@ -273,6 +272,8 @@ impl<A: OrigDstAddr> Config<A> {
             // that profile resolutions are shared even as the type of request
             // may vary.
             let http_logical_profile_cache = http_concrete
+                .clone()
+                .push_per_service(http::box_request::Layer::new())
                 .check_service::<Concrete<HttpEndpoint>>()
                 // Provides route configuration. The profile service operates
                 // over `Concret` services. When overrides are in play, the
@@ -299,15 +300,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_new_service_routes::<(), Logical<HttpEndpoint>>()
                 .new_service(());
 
-            // .push_per_service(
-            //     fallback::Layer::new(
-            //         http_balancer_cache
-            //             .push_per_service(svc::layers().boxed_http_response())
-            //             .into_inner(),
-            //     )
-            //     .on_error::<DiscoveryRejected>(),
-            // )
-
             // Caches DNS refinements from relative names to canonical names.
             //
             // For example, a client may send requests to `foo` or `foo.ns`; and
@@ -325,6 +317,24 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Routes requests to their logical target.
             let http_logical_router = svc::stack(http_logical_profile_cache)
+                .check_service::<Logical<HttpEndpoint>>()
+                .push_per_service(svc::layers().boxed_http_response())
+                .push_make_ready()
+                .push(
+                    fallback::Layer::new(
+                        http_concrete
+                            .push_map_target(|inner: Logical<HttpEndpoint>| Concrete {
+                                addr: inner.addr.clone(),
+                                inner,
+                            })
+                            .push_per_service(
+                                svc::layers().boxed_http_response().boxed_http_request(),
+                            )
+                            .check_service::<Logical<HttpEndpoint>>()
+                            .into_inner(),
+                    )
+                    .on_error::<DiscoveryRejected>(),
+                )
                 .check_service::<Logical<HttpEndpoint>>()
                 // Sets the canonical-dst header on all outbound requests.
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
