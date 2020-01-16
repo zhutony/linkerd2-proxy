@@ -6,7 +6,8 @@
 #![deny(warnings, rust_2018_idioms)]
 
 pub use self::endpoint::{
-    Concrete, HttpEndpoint, Logical, LogicalKey, Profile, ProfileKey, Target, TcpEndpoint,
+    Concrete, HttpEndpoint, Logical, LogicalPerRequest, Profile, ProfilePerTarget, Target,
+    TcpEndpoint,
 };
 use futures::future;
 use linkerd2_app_core::{
@@ -80,7 +81,7 @@ impl<A: OrigDstAddr> Config<A> {
     ) -> Result<Outbound, Error>
     where
         A: Send + 'static,
-        R: Resolve<Target<http::Settings>, Endpoint = proxy::api_resolve::Metadata>
+        R: Resolve<Concrete<http::Settings>, Endpoint = proxy::api_resolve::Metadata>
             + Clone
             + Send
             + Sync
@@ -208,13 +209,11 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Target<HttpEndpoint>>()
                 .push(discover)
                 .push_per_service(http::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
-                .push_map_target(|t: Concrete| t.map(|c| c.inner.settings))
-                .check_service::<Concrete>()
                 .push_pending()
                 // Shares the balancer, ensuring discovery errors are propagated.
-                .push_per_service(svc::lock::Layer::<LogicalError>::new())
+                .push_per_service(svc::lock::Layer::<BalancerError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
-                .push_trace(|c: &Concrete| info_span!("balance", addr = %c.addr));
+                .push_trace(|c: &Concrete<http::Settings>| info_span!("balance", addr = %c.addr));
 
             // Caches clients that bypass discovery/balancing.
             //
@@ -230,7 +229,27 @@ impl<A: OrigDstAddr> Config<A> {
                 .push_trace(|endpoint: &Target<HttpEndpoint>| {
                     info_span!("forward", peer.addr = %endpoint.addr, peer.id = ?endpoint.inner.identity)
                 })
-                .check_service::<Target<HttpEndpoint>>();
+                .push_map_target(|t: Concrete<HttpEndpoint>| Target {
+                    addr: t.addr.into(),
+                    inner: t.inner.inner,
+                })
+                .check_service::<Concrete<HttpEndpoint>>();
+
+            let http_concrete = http_balancer_cache
+                .push_make_ready()
+                .push_map_target(|c: Concrete<HttpEndpoint>| c.map(|l| l.map(|e| e.settings)))
+                .check_service::<Concrete<HttpEndpoint>>()
+                .push_per_service(svc::layers().boxed_http_response())
+                .push(
+                    fallback::Layer::new(
+                        http_forward_cache
+                            .push_make_ready()
+                            .push_per_service(svc::layers().boxed_http_response())
+                            .into_inner(),
+                    )
+                    .with_predicate(BalancerError::is_discovery_rejected),
+                )
+                .check_service::<Concrete<HttpEndpoint>>();
 
             let http_profile_route_proxy = svc::proxies()
                 // Records metrics within retries.
@@ -253,9 +272,8 @@ impl<A: OrigDstAddr> Config<A> {
             // Routes `Logical` targets to a cached `Profile` stack, i.e. so
             // that profile resolutions are shared even as the type of request
             // may vary.
-            let http_logical_profile_cache = http_balancer_cache
-                .clone()
-                .check_service::<Concrete>()
+            let http_logical_profile_cache = http_concrete
+                .check_service::<Concrete<HttpEndpoint>>()
                 // Provides route configuration. The profile service operates
                 // over `Concret` services. When overrides are in play, the
                 // Concrete destination may be overridden.
@@ -263,17 +281,22 @@ impl<A: OrigDstAddr> Config<A> {
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))
-                .check_make_service::<Profile, Concrete>()
+                .check_make_service::<Profile, Concrete<HttpEndpoint>>()
                 // Use the `Logical` target as a `Concrete` target. It may be
                 // overridden by the profile layer.
-                .push_per_service(svc::map_target::Layer::new(Concrete::from))
+                .push_per_service(svc::map_target::Layer::new(
+                    |inner: Logical<HttpEndpoint>| Concrete {
+                        addr: inner.addr.clone(),
+                        inner,
+                    },
+                ))
                 .push_pending()
-                .push_per_service(svc::lock::Layer::<LogicalError>::new())
+                .push_per_service(svc::lock::Layer::<BalancerError>::new())
                 .spawn_cache(cache_capacity, cache_max_idle_age)
                 .push_trace(|_: &Profile| info_span!("profile"))
                 .check_service::<Profile>()
-                .push(router::Layer::new(|()| ProfileKey))
-                .check_new_service_routes::<(), Logical>()
+                .push(router::Layer::new(|()| ProfilePerTarget))
+                .check_new_service_routes::<(), Logical<HttpEndpoint>>()
                 .new_service(());
 
             // .push_per_service(
@@ -302,7 +325,7 @@ impl<A: OrigDstAddr> Config<A> {
 
             // Routes requests to their logical target.
             let http_logical_router = svc::stack(http_logical_profile_cache)
-                .check_service::<Logical>()
+                .check_service::<Logical<HttpEndpoint>>()
                 // Sets the canonical-dst header on all outbound requests.
                 .push(http::header_from_target::layer(CANONICAL_DST_HEADER))
                 // Strips headers that may be set by this proxy.
@@ -316,8 +339,8 @@ impl<A: OrigDstAddr> Config<A> {
                         .push(http::strip_header::request::layer(L5D_CLIENT_ID))
                         .push(http::strip_header::request::layer(DST_OVERRIDE_HEADER)),
                 )
-                .check_service::<Logical>()
-                .push_trace(|logical: &Logical| info_span!("logical", addr = %logical.addr));
+                .check_service::<Logical<HttpEndpoint>>()
+                .push_trace(|logical: &Logical<_>| info_span!("logical", addr = %logical.addr));
 
             let http_admit_request = svc::layers()
                 // Ensures that load is not shed if the inner service is in-use.
@@ -340,27 +363,10 @@ impl<A: OrigDstAddr> Config<A> {
                 .push(metrics.http_handle_time.layer());
 
             let http_server = http_logical_router
-                .push_per_service(svc::layers().boxed_http_response())
-                .push_make_ready()
-                //.push_per_service(svc::layers().boxed_http_response())
-                .check_service::<Logical>()
-                .push(fallback::Layer::new(
-                    http_forward_cache
-                        .push_make_ready()
-                        .push_map_target(|l: Logical| Logical {
-                            addr: l.addr.into(),
-                            inner: l.inner,
-                        })
-                        .push_per_service(
-                            svc::layers()
-                                .boxed_http_response()
-                        )
-                        .into_inner()
-                ).with_predicate(LogicalError::is_discovery_rejected))
-                .check_service::<Logical>()
+                .check_service::<Logical<HttpEndpoint>>()
                 .push_make_ready()
                 .push_timeout(service_acquisition_timeout)
-                .push(router::Layer::new(LogicalKey::from))
+                .push(router::Layer::new(LogicalPerRequest::from))
                 // Used by tap.
                 .push_http_insert_target()
                 .push_per_service(http_admit_request)
@@ -428,40 +434,40 @@ pub fn trace_labels() -> HashMap<String, String> {
 }
 
 #[derive(Clone, Debug)]
-enum LogicalError {
+enum BalancerError {
     DiscoveryRejected,
     Inner(String),
 }
 
-impl std::fmt::Display for LogicalError {
+impl std::fmt::Display for BalancerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LogicalError::DiscoveryRejected => write!(f, "discovery rejected"),
-            LogicalError::Inner(e) => e.fmt(f),
+            BalancerError::DiscoveryRejected => write!(f, "discovery rejected"),
+            BalancerError::Inner(e) => e.fmt(f),
         }
     }
 }
 
-impl std::error::Error for LogicalError {}
+impl std::error::Error for BalancerError {}
 
-impl From<Error> for LogicalError {
+impl From<Error> for BalancerError {
     fn from(orig: Error) -> Self {
-        if let Some(inner) = orig.downcast_ref::<LogicalError>() {
+        if let Some(inner) = orig.downcast_ref::<BalancerError>() {
             return inner.clone();
         }
 
         if orig.is::<DiscoveryRejected>() {
-            return LogicalError::DiscoveryRejected;
+            return BalancerError::DiscoveryRejected;
         }
 
-        LogicalError::Inner(orig.to_string())
+        BalancerError::Inner(orig.to_string())
     }
 }
 
-impl LogicalError {
+impl BalancerError {
     fn is_discovery_rejected(err: &Error) -> bool {
         tracing::trace!(?err, "is_discovery_rejected");
-        if let Some(LogicalError::DiscoveryRejected) = err.downcast_ref::<LogicalError>() {
+        if let Some(BalancerError::DiscoveryRejected) = err.downcast_ref::<BalancerError>() {
             return true;
         }
 

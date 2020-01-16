@@ -19,18 +19,18 @@ use std::sync::Arc;
 #[derive(Copy, Clone, Debug)]
 pub struct FromMetadata;
 
-pub type Logical = Target<HttpEndpoint>;
+pub type Logical<T> = Target<T>;
 
-pub type Concrete = Target<Logical>;
+pub type Concrete<T> = Target<Logical<T>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Profile(Addr);
 
 #[derive(Clone, Debug)]
-pub struct LogicalKey(tls::accept::Meta);
+pub struct LogicalPerRequest(tls::accept::Meta);
 
 #[derive(Clone, Debug)]
-pub struct ProfileKey;
+pub struct ProfilePerTarget;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Target<T> {
@@ -251,12 +251,12 @@ impl tap::Inspect for HttpEndpoint {
     }
 }
 
-impl MapEndpoint<Target<http::Settings>, Metadata> for FromMetadata {
+impl MapEndpoint<Concrete<http::Settings>, Metadata> for FromMetadata {
     type Out = Target<HttpEndpoint>;
 
     fn map_endpoint(
         &self,
-        target: &Target<http::Settings>,
+        concrete: &Concrete<http::Settings>,
         addr: SocketAddr,
         metadata: Metadata,
     ) -> Self::Out {
@@ -269,12 +269,12 @@ impl MapEndpoint<Target<http::Settings>, Metadata> for FromMetadata {
             });
 
         Target {
-            addr: target.addr.clone(),
+            addr: concrete.addr.clone(),
             inner: HttpEndpoint {
                 addr,
                 identity,
                 metadata,
-                settings: target.inner,
+                settings: concrete.inner.inner,
             },
         }
     }
@@ -331,15 +331,15 @@ impl Into<EndpointLabels> for TcpEndpoint {
     }
 }
 
-// === impl LogicalKey ===
+// === impl LogicalPerRequest ===
 
-impl From<tls::accept::Meta> for LogicalKey {
+impl From<tls::accept::Meta> for LogicalPerRequest {
     fn from(accept: tls::accept::Meta) -> Self {
-        LogicalKey(accept)
+        LogicalPerRequest(accept)
     }
 }
 
-impl<B> router::Key<http::Request<B>> for LogicalKey {
+impl<B> router::Key<http::Request<B>> for LogicalPerRequest {
     type Key = Target<HttpEndpoint>;
 
     fn key(&self, req: &http::Request<B>) -> Self::Key {
@@ -391,18 +391,9 @@ impl<B> router::Key<http::Request<B>> for LogicalKey {
     }
 }
 
-impl From<Logical> for Concrete {
-    fn from(inner: Logical) -> Self {
-        Concrete {
-            addr: inner.addr.clone(),
-            inner,
-        }
-    }
-}
+// === impl ProfilePerTarget ===
 
-// === impl ProfileKey ===
-
-impl<T> router::Key<Target<T>> for ProfileKey {
+impl<T> router::Key<Target<T>> for ProfilePerTarget {
     type Key = Profile;
 
     fn key(&self, t: &Target<T>) -> Self::Key {
