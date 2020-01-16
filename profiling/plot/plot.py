@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import argparse
 
 parser = argparse.ArgumentParser(
@@ -37,19 +38,29 @@ try:
 except Exception as e:
     print("Error:", e)
 
-try:
-    only_latency = g[[
-        "branch", "p999 latency (ms)", "stddev"]][g["p999 latency (ms)"] > 0]
+
+def plot_percentile(ax, p, df):
+    name = p + " latency (ms)"
+    only_latency = df[["branch", name, "stddev"]][df[name] > 0]
     rearrange_latency = only_latency.pivot_table(
-        index=indices, columns="branch", values=["p999 latency (ms)", "stddev"], aggfunc={'p999 latency (ms)': np.mean, 'stddev': np.mean})
+        index=indices, columns="branch", values=[name, "stddev"], aggfunc={name: np.mean, 'stddev': np.mean})
     errs = rearrange_latency[["stddev"]].rename(
-        columns={'stddev': "p999 latency (ms)"}, inplace=False)
-    rearrange_latency[["p999 latency (ms)"]].plot(kind="bar", logy=args.logy, title="p999 Latency (ms)", figsize=(
-        28, 3), fontsize=7, yerr=errs)  # increase figsize x value if labels overlap
-    plt.xticks(rotation=0)
-    outfile_latency = args.outputprefix + "latency.png"
-    print("Save graph to", outfile_latency)
-    plt.savefig(outfile_latency, bbox_inches="tight")
-    print("Plotted HTTP/gRPC graph sucessfully")
+        columns={'stddev': name}, inplace=False)
+    rearrange_latency[[name]].plot(ax=ax, kind="bar", logy=args.logy, figsize=(
+        28, 15), fontsize=7, yerr=errs)  # increase figsize x value if labels overlap
+    ax.set_ylabel(name)
+    ax.tick_params(labelrotation=0)
+
+
+try:
+    fig, axs = plt.subplots(4, 1, sharex=True)
+    percentiles = ["p50", "p90", "p99", "p999"]
+
+    for ax, percentile in zip(axs, percentiles):
+        plot_percentile(ax, percentile, g)
+
+    out = args.outputprefix + "latency.png"
+    print("Save graph to", out)
+    fig.savefig(out, bbox_inches="tight")
 except Exception as e:
     print("Error:", e)
