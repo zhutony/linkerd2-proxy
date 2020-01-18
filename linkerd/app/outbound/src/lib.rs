@@ -16,12 +16,7 @@ use linkerd2_app_core::{
     dns, drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
     proxy::{
-        self,
-        core::resolve::Resolve,
-        discover, fallback,
-        http::{self, profiles},
-        identity,
-        resolve::map_endpoint,
+        self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
         tap, tcp, Server,
     },
     reconnect, router, serve,
@@ -32,6 +27,8 @@ use linkerd2_app_core::{
     Conditional, DiscoveryRejected, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER,
     L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
 };
+use linkerd2_retry as retry;
+use linkerd2_service_profiles as profiles;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -256,7 +253,7 @@ impl<A: OrigDstAddr> Config<A> {
                     metrics.http_route_retry.clone(),
                 ))
                 // Sets an optional retry policy.
-                .push(http::retry::layer(metrics.http_route_retry))
+                .push(retry::Layer::new(metrics.http_route_retry))
                 // Sets an optional request timeout.
                 .push(http::timeout::layer())
                 // Records per-route metrics.
@@ -278,7 +275,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Provides route configuration. The profile service operates
                 // over `Concret` services. When overrides are in play, the
                 // Concrete destination may be overridden.
-                .push(http::profiles::Layer::with_overrides(
+                .push(profiles::Layer::with_overrides(
                     profiles_client,
                     http_profile_route_proxy.into_inner(),
                 ))

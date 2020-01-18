@@ -97,15 +97,15 @@ impl Default for HttpBody {
     }
 }
 
-impl super::retry::TryClone for HttpBody {
-    fn try_clone(&self) -> Option<Self> {
-        if self.is_end_stream() {
-            Some(HttpBody::default())
-        } else {
-            None
-        }
-    }
-}
+// impl super::retry::TryClone for HttpBody {
+//     fn try_clone(&self) -> Option<Self> {
+//         if self.is_end_stream() {
+//             Some(HttpBody::default())
+//         } else {
+//             None
+//         }
+//     }
+// }
 
 impl Drop for HttpBody {
     fn drop(&mut self) {

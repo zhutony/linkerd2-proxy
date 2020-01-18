@@ -34,7 +34,6 @@ linkerd2-stack = { path  = "../../stack" }
 linkerd2-timeout = { path  = "../../timeout" }
 linkerd2-proxy-transport = { path  = "../transport" }
 rand = "0.7"
-regex = "1.0.0"
 tokio = "0.1"
 tokio-connect = { git = "https://github.com/carllerche/tokio-connect" }
 tokio-timer = "0.2"   # for tokio_timer::clock

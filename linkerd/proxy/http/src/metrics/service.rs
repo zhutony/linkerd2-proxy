@@ -1,4 +1,4 @@
-use super::super::retry::TryClone;
+//use super::super::retry::TryClone;
 use super::classify::{ClassifyEos, ClassifyResponse};
 use super::{ClassMetrics, Registry, RequestMetrics, StatusMetrics};
 use futures::{try_ready, Async, Future, Poll};
@@ -468,18 +468,18 @@ where
     }
 }
 
-impl<B, C> TryClone for RequestBody<B, C>
-where
-    B: Payload + TryClone,
-    C: Eq + Hash,
-{
-    fn try_clone(&self) -> Option<Self> {
-        self.inner.try_clone().map(|inner| RequestBody {
-            inner,
-            metrics: self.metrics.clone(),
-        })
-    }
-}
+// impl<B, C> TryClone for RequestBody<B, C>
+// where
+//     B: Payload + TryClone,
+//     C: Eq + Hash,
+// {
+//     fn try_clone(&self) -> Option<Self> {
+//         self.inner.try_clone().map(|inner| RequestBody {
+//             inner,
+//             metrics: self.metrics.clone(),
+//         })
+//     }
+// }
 
 impl<B, C> Default for ResponseBody<B, C>
 where

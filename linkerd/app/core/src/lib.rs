@@ -20,6 +20,7 @@ pub use linkerd2_opencensus as opencensus;
 pub use linkerd2_reconnect as reconnect;
 pub use linkerd2_request_filter as request_filter;
 pub use linkerd2_router as router;
+pub use linkerd2_service_profiles as profiles;
 pub use linkerd2_trace_context as trace_context;
 
 pub mod accept_error;
@@ -32,7 +33,6 @@ pub mod dst;
 pub mod errors;
 pub mod handle_time;
 pub mod metric_labels;
-pub mod profiles;
 pub mod proxy;
 pub mod serve;
 pub mod spans;

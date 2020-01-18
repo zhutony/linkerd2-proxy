@@ -1,7 +1,8 @@
+use crate::profiles;
 use http;
 use linkerd2_error::Error;
 pub use linkerd2_proxy_http::metrics::classify::{self, layer, CanClassify};
-use linkerd2_proxy_http::{profiles, timeout, HasH2Reason};
+use linkerd2_proxy_http::{timeout, HasH2Reason};
 use std::borrow::Cow;
 use tower_grpc::{self as grpc};
 use tracing::trace;

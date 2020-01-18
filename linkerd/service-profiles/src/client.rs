@@ -1,8 +1,8 @@
-use crate::dns;
-use crate::proxy::http::{profiles, retry::Budget};
+use crate::http as profiles;
 use futures::{try_ready, Async, Future, Poll, Stream};
 use http;
 use linkerd2_addr::{Addr, NameAddr};
+use linkerd2_dns as dns;
 use linkerd2_error::{Error, Never, Recover};
 use linkerd2_proxy_api::destination as api;
 use regex::Regex;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::timer::Delay;
+use tower::retry::budget::Budget;
 use tower_grpc::{self as grpc, generic::client::GrpcService, Body, BoxBody};
 use tracing::{debug, error, info, info_span, trace, warn};
 use tracing_futures::Instrument;
@@ -27,6 +28,9 @@ pub type Receiver = watch::Receiver<profiles::Routes>;
 
 type Sender = watch::Sender<profiles::Routes>;
 
+#[derive(Clone, Debug)]
+pub struct InvalidProfileAddr(Addr);
+
 pub struct ProfileFuture<S, R>
 where
     S: GrpcService<BoxBody>,
@@ -40,7 +44,7 @@ where
     S: GrpcService<BoxBody>,
     R: Recover,
 {
-    Disabled,
+    Invalid(Addr),
     Pending(Option<Inner<S, R>>, Delay),
 }
 
@@ -132,7 +136,7 @@ where
             Addr::Socket(_) => {
                 self.service = self.service.clone();
                 return ProfileFuture {
-                    inner: ProfileFutureInner::Disabled,
+                    inner: ProfileFutureInner::Invalid(dst),
                 };
             }
         };
@@ -141,7 +145,7 @@ where
             debug!("name not in profile suffixes");
             self.service = self.service.clone();
             return ProfileFuture {
-                inner: ProfileFutureInner::Disabled,
+                inner: ProfileFutureInner::Invalid(dst.into()),
             };
         }
 
@@ -186,7 +190,7 @@ where
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.inner {
-            ProfileFutureInner::Disabled => Err(super::DiscoveryRejected::new().into()),
+            ProfileFutureInner::Invalid(ref addr) => Err(InvalidProfileAddr(addr.clone()).into()),
             ProfileFutureInner::Pending(ref mut inner, ref mut timeout) => {
                 let profile = match inner.as_mut().expect("polled after ready").poll_profile() {
                     Err(error) => {
@@ -550,3 +554,17 @@ mod tests {
         }
     }
 }
+
+impl InvalidProfileAddr {
+    pub fn addr(&self) -> &Addr {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for InvalidProfileAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid profile addr: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidProfileAddr {}

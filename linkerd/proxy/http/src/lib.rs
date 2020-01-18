@@ -21,8 +21,6 @@ pub mod insert;
 pub mod metrics;
 pub mod normalize_uri;
 pub mod orig_proto;
-pub mod profiles;
-pub mod retry;
 pub mod settings;
 pub mod strip_header;
 pub mod timeout;

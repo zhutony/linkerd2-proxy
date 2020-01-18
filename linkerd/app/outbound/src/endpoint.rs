@@ -4,7 +4,7 @@ use linkerd2_app_core::{
     metric_labels::{prefix_labels, EndpointLabels},
     proxy::{
         api_resolve::{Metadata, ProtocolHint},
-        http::{self, identity_from_header, profiles},
+        http::{self, identity_from_header},
         identity,
         resolve::map_endpoint::MapEndpoint,
         tap,
@@ -13,6 +13,7 @@ use linkerd2_app_core::{
     transport::{connect, tls},
     Addr, Conditional, L5D_REQUIRE_ID,
 };
+use linkerd2_service_profiles as profiles;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
