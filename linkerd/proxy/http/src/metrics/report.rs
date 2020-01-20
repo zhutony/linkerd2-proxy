@@ -1,4 +1,4 @@
-use super::{ClassMetrics, Registry, RequestMetrics, RetrySkipped, StatusMetrics};
+use super::{ClassMetrics, Registry, RequestMetrics, RetryMetrics, StatusMetrics};
 use http;
 use linkerd2_metrics::{latency, Counter, FmtLabels, FmtMetric, FmtMetrics, Histogram, Metric};
 use std::fmt;
@@ -10,40 +10,33 @@ use tracing::trace;
 
 /// Reports HTTP metrics for prometheus.
 #[derive(Clone, Debug)]
-pub struct Report<T, C>
+pub struct Report<T, M>
 where
-    T: FmtLabels + Hash + Eq,
-    C: FmtLabels + Hash + Eq,
+    T: Hash + Eq,
 {
     prefix: &'static str,
-    scope: Scope,
-    registry: Arc<Mutex<Registry<T, C>>>,
+    registry: Arc<Mutex<Registry<T, M>>>,
     retain_idle: Duration,
 }
 
 struct Status(http::StatusCode);
 
-#[derive(Clone, Debug)]
-struct Scope {
-    request_total_key: String,
-    response_total_key: String,
-    response_latency_ms_key: String,
-    retry_skipped_total_key: String,
+struct Prefixed<'p, N: fmt::Display> {
+    prefix: &'p str,
+    name: N,
 }
 
 // ===== impl Report =====
 
-impl<T, C> Report<T, C>
+impl<T, M> Report<T, M>
 where
-    T: FmtLabels + Hash + Eq,
-    C: FmtLabels + Hash + Eq,
+    T: Hash + Eq,
 {
-    pub(super) fn new(retain_idle: Duration, registry: Arc<Mutex<Registry<T, C>>>) -> Self {
+    pub(super) fn new(retain_idle: Duration, registry: Arc<Mutex<Registry<T, M>>>) -> Self {
         Self {
             prefix: "",
             registry,
             retain_idle,
-            scope: Scope::default(),
         }
     }
 
@@ -52,21 +45,53 @@ where
             return self;
         }
 
-        Self {
-            prefix,
-            scope: Scope::prefixed(prefix),
-            ..self
+        Self { prefix, ..self }
+    }
+
+    fn prefixed<N: fmt::Display>(&self, name: N) -> Prefixed<'_, N> {
+        Prefixed {
+            prefix: &self.prefix,
+            name,
         }
     }
 }
 
-impl<T, C> FmtMetrics for Report<T, C>
+impl<T, C> Report<T, RequestMetrics<C>>
+where
+    T: FmtLabels + Hash + Eq,
+    C: FmtLabels + Hash + Eq,
+{
+    fn request_total(&self) -> Metric<'_, Prefixed<'_, &'static str>, Counter> {
+        Metric::new(
+            self.prefixed("request_total"),
+            "Total count of HTTP requests.",
+        )
+    }
+
+    fn response_total(&self) -> Metric<'_, Prefixed<'_, &'static str>, Counter> {
+        Metric::new(
+            self.prefixed("response_total"),
+            "Total count of HTTP responses.",
+        )
+    }
+
+    fn response_latency_ms(
+        &self,
+    ) -> Metric<'_, Prefixed<'_, &'static str>, Histogram<latency::Ms>> {
+        Metric::new(
+            self.prefixed("response_latency_ms"),
+            "Elapsed times between a request's headers being received \
+             and its response stream completing",
+        )
+    }
+}
+
+impl<T, C> FmtMetrics for Report<T, RequestMetrics<C>>
 where
     T: FmtLabels + Hash + Eq,
     C: FmtLabels + Hash + Eq,
 {
     fn fmt_metrics(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        trace!("fmt_metrics({})", self.prefix);
         let mut registry = match self.registry.lock() {
             Err(_) => return Ok(()),
             Ok(r) => r,
@@ -74,87 +99,66 @@ where
 
         let now = clock::now();
         let since = now - self.retain_idle;
-        trace!(
-            "fmt_metrics({}): retain_since: now={:?} since={:?}",
-            self.prefix,
-            now,
-            since
-        );
         registry.retain_since(since);
-
-        let registry = registry;
         trace!(
-            "fmt_metrics({}): by_target={}",
-            self.prefix,
-            registry.by_target.len()
+            prfefix = %self.prefix,
+            ?now,
+            ?since,
+            targets = %registry.by_target.len(),
+            "Formatting HTTP request metrics",
         );
+        let registry = registry; // Mutability no longer needed.
+
         if registry.by_target.is_empty() {
             return Ok(());
         }
 
-        self.scope.request_total().fmt_help(f)?;
-        registry.fmt_by_target(f, self.scope.request_total(), |s| &s.total)?;
+        self.request_total().fmt_help(f)?;
+        registry.fmt_by_target(f, self.request_total(), |s| &s.total)?;
 
-        self.scope.response_latency_ms().fmt_help(f)?;
-        registry.fmt_by_status(f, self.scope.response_latency_ms(), |s| &s.latency)?;
+        self.response_latency_ms().fmt_help(f)?;
+        registry.fmt_by_status(f, self.response_latency_ms(), |s| &s.latency)?;
 
-        self.scope.response_total().fmt_help(f)?;
-        registry.fmt_by_class(f, self.scope.response_total(), |s| &s.total)?;
-
-        self.scope.retry_skipped_total().fmt_help(f)?;
-        registry.fmt_by_retry(f, self.scope.retry_skipped_total())?;
+        self.response_total().fmt_help(f)?;
+        registry.fmt_by_class(f, self.response_total(), |s| &s.total)?;
 
         Ok(())
     }
 }
 
-impl<T, C> Registry<T, C>
+impl<T, C> Registry<T, RequestMetrics<C>>
 where
     T: FmtLabels + Hash + Eq,
     C: FmtLabels + Hash + Eq,
 {
-    fn fmt_by_target<M, F>(
+    fn fmt_by_target<N, V, F>(
         &self,
         f: &mut fmt::Formatter<'_>,
-        metric: Metric<'_, M>,
+        metric: Metric<'_, N, V>,
         get_metric: F,
     ) -> fmt::Result
     where
-        M: FmtMetric,
-        F: Fn(&RequestMetrics<C>) -> &M,
+        N: fmt::Display,
+        V: FmtMetric,
+        F: Fn(&RequestMetrics<C>) -> &V,
     {
         for (tgt, tm) in &self.by_target {
             if let Ok(m) = tm.lock() {
-                get_metric(&*m).fmt_metric_labeled(f, metric.name, tgt)?;
+                get_metric(&*m).fmt_metric_labeled(f, &metric.name, tgt)?;
             }
         }
 
         Ok(())
     }
 
-    fn fmt_by_retry<M>(&self, f: &mut fmt::Formatter<'_>, metric: Metric<'_, M>) -> fmt::Result
-    where
-        M: FmtMetric,
-    {
-        for (tgt, tm) in &self.by_target {
-            if let Ok(tm) = tm.lock() {
-                for (retry, m) in &tm.by_retry_skipped {
-                    let labels = (tgt, retry);
-                    m.fmt_metric_labeled(f, metric.name, labels)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn fmt_by_status<M, F>(
+    fn fmt_by_status<N, M, F>(
         &self,
         f: &mut fmt::Formatter<'_>,
-        metric: Metric<'_, M>,
+        metric: Metric<'_, N, M>,
         get_metric: F,
     ) -> fmt::Result
     where
+        N: fmt::Display,
         M: FmtMetric,
         F: Fn(&StatusMetrics<C>) -> &M,
     {
@@ -163,7 +167,7 @@ where
                 for (status, m) in &tm.by_status {
                     let status = status.as_ref().map(|s| Status(*s));
                     let labels = (tgt, status);
-                    get_metric(&*m).fmt_metric_labeled(f, metric.name, labels)?;
+                    get_metric(&*m).fmt_metric_labeled(f, &metric.name, labels)?;
                 }
             }
         }
@@ -171,13 +175,14 @@ where
         Ok(())
     }
 
-    fn fmt_by_class<M, F>(
+    fn fmt_by_class<N, M, F>(
         &self,
         f: &mut fmt::Formatter<'_>,
-        metric: Metric<'_, M>,
+        metric: Metric<'_, N, M>,
         get_metric: F,
     ) -> fmt::Result
     where
+        N: fmt::Display,
         M: FmtMetric,
         F: Fn(&ClassMetrics) -> &M,
     {
@@ -187,7 +192,7 @@ where
                     for (cls, m) in &sm.by_class {
                         let status = status.as_ref().map(|s| Status(*s));
                         let labels = (tgt, (status, cls));
-                        get_metric(&*m).fmt_metric_labeled(f, metric.name, labels)?;
+                        get_metric(&*m).fmt_metric_labeled(f, &metric.name, labels)?;
                     }
                 }
             }
@@ -197,65 +202,57 @@ where
     }
 }
 
-// === impl Scope ===
-
-impl Default for Scope {
-    fn default() -> Self {
-        Self {
-            request_total_key: "request_total".to_owned(),
-            response_total_key: "response_total".to_owned(),
-            response_latency_ms_key: "response_latency_ms".to_owned(),
-            retry_skipped_total_key: "retry_skipped_total".to_owned(),
-        }
+impl<T> Report<T, RetryMetrics>
+where
+    T: FmtLabels + Hash + Eq,
+{
+    fn retry_skipped_total(&self) -> Metric<'_, Prefixed<'_, &'static str>, Counter> {
+        Metric::new(
+            self.prefixed("retry_skipped_total"),
+            "Total count of retryable HTTP responses that were not retried.",
+        )
     }
 }
 
-impl Scope {
-    fn prefixed(prefix: &'static str) -> Self {
-        if prefix.is_empty() {
-            return Self::default();
+impl<T> FmtMetrics for Report<T, RetryMetrics>
+where
+    T: FmtLabels + Hash + Eq,
+{
+    fn fmt_metrics(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut registry = match self.registry.lock() {
+            Err(_) => return Ok(()),
+            Ok(r) => r,
+        };
+
+        let now = clock::now();
+        let since = now - self.retain_idle;
+        registry.retain_since(since);
+        trace!(
+            prfefix = %self.prefix,
+            ?now,
+            ?since,
+            targets = %registry.by_target.len(),
+            "Formatting HTTP retry metrics",
+        );
+        let registry = registry; // Mutability no longer needed.
+
+        if registry.by_target.is_empty() {
+            return Ok(());
         }
 
-        Self {
-            request_total_key: format!("{}_request_total", prefix),
-            response_total_key: format!("{}_response_total", prefix),
-            response_latency_ms_key: format!("{}_response_latency_ms", prefix),
-            retry_skipped_total_key: format!("{}_retry_skipped_total", prefix),
+        self.retry_skipped_total().fmt_help(f)?;
+        for (tgt, tm) in &registry.by_target {
+            if let Ok(m) = tm.lock() {
+                m.skipped.fmt_metric_labeled(
+                    f,
+                    self.retry_skipped_total().name,
+                    (tgt, RetrySkipped),
+                )?;
+            }
         }
+
+        Ok(())
     }
-
-    fn request_total(&self) -> Metric<'_, Counter> {
-        Metric::new(&self.request_total_key, &Self::REQUEST_TOTAL_HELP)
-    }
-
-    fn response_total(&self) -> Metric<'_, Counter> {
-        Metric::new(&self.response_total_key, &Self::RESPONSE_TOTAL_HELP)
-    }
-
-    fn response_latency_ms(&self) -> Metric<'_, Histogram<latency::Ms>> {
-        Metric::new(
-            &self.response_latency_ms_key,
-            &Self::RESPONSE_LATENCY_MS_HELP,
-        )
-    }
-
-    fn retry_skipped_total(&self) -> Metric<'_, Counter> {
-        Metric::new(
-            &self.retry_skipped_total_key,
-            &Self::RETRY_SKIPPED_TOTAL_HELP,
-        )
-    }
-
-    const REQUEST_TOTAL_HELP: &'static str = "Total count of HTTP requests.";
-
-    const RESPONSE_TOTAL_HELP: &'static str = "Total count of HTTP responses.";
-
-    const RESPONSE_LATENCY_MS_HELP: &'static str =
-        "Elapsed times between a request's headers being received \
-         and its response stream completing";
-
-    const RETRY_SKIPPED_TOTAL_HELP: &'static str =
-        "Total count of retryable HTTP responses that were not retried.";
 }
 
 impl FmtLabels for Status {
@@ -264,14 +261,20 @@ impl FmtLabels for Status {
     }
 }
 
+struct RetrySkipped;
+
 impl FmtLabels for RetrySkipped {
     fn fmt_labels(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "skipped=\"{}\"",
-            match self {
-                RetrySkipped::Budget => "budget",
-            }
-        )
+        write!(f, "skipped=\"budget\"",)
+    }
+}
+
+impl<'p, N: fmt::Display> fmt::Display for Prefixed<'p, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.prefix.is_empty() {
+            return self.name.fmt(f);
+        }
+
+        write!(f, "{}_{}", self.prefix, self.name)
     }
 }

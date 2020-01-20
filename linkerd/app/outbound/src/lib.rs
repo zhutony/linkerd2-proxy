@@ -248,10 +248,6 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Concrete<HttpEndpoint>>();
 
             let http_profile_route_proxy = svc::proxies()
-                // Records metrics within retries.
-                .push(http::metrics::Layer::<_, classify::Response>::new(
-                    metrics.http_route_retry.clone(),
-                ))
                 // Sets an optional retry policy.
                 .push(retry::Layer::new(metrics.http_route_retry))
                 // Sets an optional request timeout.

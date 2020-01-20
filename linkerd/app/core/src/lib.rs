@@ -74,22 +74,24 @@ pub fn http_request_host_addr<B>(req: &http::Request<B>) -> Result<Addr, addr::E
         .and_then(|a| Addr::from_authority_and_default_port(&a, DEFAULT_PORT))
 }
 
-pub type ControlHttpMetricsRegistry =
-    proxy::http::metrics::SharedRegistry<metric_labels::ControlLabels, classify::Class>;
+pub type ControlHttpMetrics =
+    proxy::http::metrics::Requests<metric_labels::ControlLabels, classify::Class>;
 
-pub type HttpEndpointMetricsRegistry =
-    proxy::http::metrics::SharedRegistry<metric_labels::EndpointLabels, classify::Class>;
+pub type HttpEndpointMetrics =
+    proxy::http::metrics::Requests<metric_labels::EndpointLabels, classify::Class>;
 
-pub type HttpRouteMetricsRegistry =
-    proxy::http::metrics::SharedRegistry<metric_labels::RouteLabels, classify::Class>;
+pub type HttpRouteMetrics =
+    proxy::http::metrics::Requests<metric_labels::RouteLabels, classify::Class>;
+
+pub type HttpRouteRetry = proxy::http::metrics::Retry<metric_labels::RouteLabels>;
 
 #[derive(Clone)]
 pub struct ProxyMetrics {
     pub http_handle_time: proxy::http::metrics::handle_time::Scope,
-    pub http_route: HttpRouteMetricsRegistry,
-    pub http_route_retry: HttpRouteMetricsRegistry,
-    pub http_endpoint: HttpEndpointMetricsRegistry,
-    pub transport: transport::MetricsRegistry,
+    pub http_route: HttpRouteMetrics,
+    pub http_route_retry: HttpRouteRetry,
+    pub http_endpoint: HttpEndpointMetrics,
+    pub transport: transport::Metrics,
 }
 
 #[derive(Clone, Debug)]

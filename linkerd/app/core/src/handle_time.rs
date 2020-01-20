@@ -29,7 +29,7 @@ impl Metrics {
         self.inbound.clone()
     }
 
-    fn metric(&self) -> Metric<'_, handle_time::Scope> {
+    fn metric(&self) -> Metric<'_, &str, handle_time::Scope> {
         Metric::new(Self::NAME, Self::HELP)
     }
 

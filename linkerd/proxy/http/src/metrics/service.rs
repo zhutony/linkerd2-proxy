@@ -1,6 +1,6 @@
 //use super::super::retry::TryClone;
 use super::classify::{ClassifyEos, ClassifyResponse};
-use super::{ClassMetrics, Registry, RequestMetrics, StatusMetrics};
+use super::{ClassMetrics, RequestMetrics, Requests, StatusMetrics};
 use futures::{try_ready, Async, Future, Poll};
 use http;
 use hyper::body::Payload;
@@ -22,7 +22,7 @@ where
     C: ClassifyResponse,
     C::Class: Hash + Eq,
 {
-    registry: Arc<Mutex<Registry<K, C::Class>>>,
+    registry: Requests<K, C::Class>,
     _p: PhantomData<fn() -> C>,
 }
 
@@ -34,7 +34,7 @@ where
     C: ClassifyResponse,
     C::Class: Hash + Eq,
 {
-    registry: Arc<Mutex<Registry<K, C::Class>>>,
+    registry: Requests<K, C::Class>,
     inner: M,
     _p: PhantomData<fn() -> C>,
 }
@@ -105,7 +105,7 @@ where
     C: ClassifyResponse + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
-    pub fn new(registry: Arc<Mutex<Registry<K, C::Class>>>) -> Self {
+    pub fn new(registry: Requests<K, C::Class>) -> Self {
         Layer {
             registry,
             _p: PhantomData,
@@ -173,7 +173,7 @@ where
     type Service = Metrics<M::Service, C>;
 
     fn new_service(&self, target: T) -> Self::Service {
-        let metrics = match self.registry.lock() {
+        let metrics = match self.registry.0.lock() {
             Ok(mut r) => Some(
                 r.by_target
                     .entry(target.clone().into())
