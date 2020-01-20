@@ -103,3 +103,76 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn expiry() {
+        use linkerd2_metrics::FmtLabels;
+        use std::fmt;
+        use std::time::Duration;
+        use tokio_timer::clock;
+
+        #[derive(Clone, Debug, Hash, Eq, PartialEq)]
+        struct Target(usize);
+        impl FmtLabels for Target {
+            fn fmt_labels(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "n=\"{}\"", self.0)
+            }
+        }
+
+        #[allow(dead_code)]
+        #[derive(Clone, Debug, Hash, Eq, PartialEq)]
+        enum Class {
+            Good,
+            Bad,
+        };
+        impl FmtLabels for Class {
+            fn fmt_labels(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                use std::fmt::Display;
+                match self {
+                    Class::Good => "class=\"good\"".fmt(f),
+                    Class::Bad => "class=\"bad\"".fmt(f),
+                }
+            }
+        }
+
+        let retain_idle_for = Duration::from_secs(1);
+        let r = super::Requests::<Target, Class>::default();
+        let report = r.clone().into_report(retain_idle_for);
+        let mut registry = r.0.lock().unwrap();
+
+        let before_update = clock::now();
+        let metrics = registry
+            .by_target
+            .entry(Target(123))
+            .or_insert_with(|| Default::default())
+            .clone();
+        assert_eq!(registry.by_target.len(), 1, "target should be registered");
+        let after_update = clock::now();
+
+        registry.retain_since(after_update);
+        assert_eq!(
+            registry.by_target.len(),
+            1,
+            "target should not be evicted by time alone"
+        );
+
+        drop(metrics);
+        registry.retain_since(before_update);
+        assert_eq!(
+            registry.by_target.len(),
+            1,
+            "target should not be evicted by availability alone"
+        );
+
+        registry.retain_since(after_update);
+        assert_eq!(
+            registry.by_target.len(),
+            0,
+            "target should be evicted by time once the handle is dropped"
+        );
+
+        drop((registry, report));
+    }
+}

@@ -225,8 +225,8 @@ impl Class {
 #[cfg(test)]
 mod tests {
     use super::{Class, SuccessOrFailure};
-    use crate::proxy::http::metrics::classify::{ClassifyEos as _CE, ClassifyResponse as _CR};
     use http::{HeaderMap, Response, StatusCode};
+    use linkerd2_http_classify::{ClassifyEos as _CE, ClassifyResponse as _CR};
 
     #[test]
     fn http_response_status_ok() {
