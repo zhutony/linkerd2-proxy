@@ -15,6 +15,7 @@ pub use linkerd2_conditional::Conditional;
 pub use linkerd2_drain as drain;
 pub use linkerd2_error::{Error, Never, Recover};
 pub use linkerd2_exp_backoff as exp_backoff;
+pub use linkerd2_http_metrics as http_metrics;
 pub use linkerd2_metrics as metrics;
 pub use linkerd2_opencensus as opencensus;
 pub use linkerd2_reconnect as reconnect;
@@ -74,20 +75,18 @@ pub fn http_request_host_addr<B>(req: &http::Request<B>) -> Result<Addr, addr::E
         .and_then(|a| Addr::from_authority_and_default_port(&a, DEFAULT_PORT))
 }
 
-pub type ControlHttpMetrics =
-    proxy::http::metrics::Requests<metric_labels::ControlLabels, classify::Class>;
+pub type ControlHttpMetrics = http_metrics::Requests<metric_labels::ControlLabels, classify::Class>;
 
 pub type HttpEndpointMetrics =
-    proxy::http::metrics::Requests<metric_labels::EndpointLabels, classify::Class>;
+    http_metrics::Requests<metric_labels::EndpointLabels, classify::Class>;
 
-pub type HttpRouteMetrics =
-    proxy::http::metrics::Requests<metric_labels::RouteLabels, classify::Class>;
+pub type HttpRouteMetrics = http_metrics::Requests<metric_labels::RouteLabels, classify::Class>;
 
-pub type HttpRouteRetry = proxy::http::metrics::Retry<metric_labels::RouteLabels>;
+pub type HttpRouteRetry = http_metrics::Retries<metric_labels::RouteLabels>;
 
 #[derive(Clone)]
 pub struct ProxyMetrics {
-    pub http_handle_time: proxy::http::metrics::handle_time::Scope,
+    pub http_handle_time: handle_time::Scope,
     pub http_route: HttpRouteMetrics,
     pub http_route_retry: HttpRouteRetry,
     pub http_endpoint: HttpEndpointMetrics,

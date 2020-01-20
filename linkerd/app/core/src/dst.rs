@@ -2,10 +2,8 @@ use super::classify;
 use crate::profiles;
 use http;
 use linkerd2_addr::Addr;
-use linkerd2_proxy_http::{
-    metrics::classify::{CanClassify, Classify, ClassifyEos, ClassifyResponse},
-    timeout,
-};
+use linkerd2_http_metrics::classify::{CanClassify, Classify, ClassifyEos, ClassifyResponse};
+use linkerd2_proxy_http::timeout;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;

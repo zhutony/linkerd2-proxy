@@ -1,0 +1,35 @@
+[package]
+name = "linkerd2-http-metrics"
+version = "0.1.0"
+authors = ["Linkerd Developers <cncf-linkerd-dev@lists.cncf.io>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+bytes = "0.4"
+futures = "0.1"
+h2 = "0.1"
+http = "0.1"
+http-body = "0.1"
+httparse = "1.2"
+hyper = "0.12.3"
+indexmap = "1.0"
+linkerd2-addr = { path  = "../addr" }
+linkerd2-dns = { path  = "../dns" }
+linkerd2-drain = { path  = "../drain" }
+linkerd2-duplex = { path  = "../duplex" }
+linkerd2-error = { path  = "../error" }
+linkerd2-fallback = { path  = "../fallback" }
+linkerd2-identity = { path  = "../identity" }
+linkerd2-cache = { path  = "../cache" }
+linkerd2-metrics = { path  = "../metrics" }
+linkerd2-stack = { path  = "../stack" }
+rand = "0.7"
+tokio = "0.1"
+tokio-connect = { git = "https://github.com/carllerche/tokio-connect" }
+tokio-timer = "0.2"   # for tokio_timer::clock
+tower = "0.1"
+tower-util = "0.1"
+tracing = "0.1.9"
+tracing-futures = "0.1"
+try-lock = "0.2"

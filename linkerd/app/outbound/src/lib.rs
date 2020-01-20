@@ -13,7 +13,7 @@ use futures::future;
 use linkerd2_app_core::{
     classify,
     config::{ProxyConfig, ServerConfig},
-    dns, drain, dst, errors,
+    dns, drain, dst, errors, http_metrics,
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
@@ -132,7 +132,7 @@ impl<A: OrigDstAddr> Config<A> {
             let http_endpoint = {
                 let observability = svc::layers()
                     .push(tap_layer.clone())
-                    .push(http::metrics::Layer::<_, classify::Response>::new(
+                    .push(http_metrics::Layer::<_, classify::Response>::new(
                         metrics.http_endpoint.clone(),
                     ))
                     .push_per_service(trace_context::layer(
@@ -253,7 +253,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets an optional request timeout.
                 .push(http::timeout::layer())
                 // Records per-route metrics.
-                .push(http::metrics::Layer::<_, classify::Response>::new(
+                .push(http_metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route,
                 ))
                 // Sets the per-route response classifier as a request

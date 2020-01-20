@@ -27,6 +27,7 @@ linkerd2-duplex = { path = "../../duplex" }
 linkerd2-error = { path = "../../error" }
 linkerd2-exp-backoff = { path = "../../exp-backoff" }
 linkerd2-fallback = { path = "../../fallback" }
+linkerd2-http-metrics = { path = "../../http-metrics" }
 linkerd2-lock = { path = "../../lock" }
 linkerd2-metrics = { path = "../../metrics" }
 linkerd2-opencensus = { path = "../../opencensus" }

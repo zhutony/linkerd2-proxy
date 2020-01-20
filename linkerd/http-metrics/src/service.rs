@@ -211,7 +211,7 @@ where
 
     fn call(&mut self, target: T) -> Self::Future {
         trace!("make: target={:?}", target);
-        let metrics = match self.registry.lock() {
+        let metrics = match self.registry.0.lock() {
             Ok(mut r) => Some(
                 r.by_target
                     .entry(target.clone().into())

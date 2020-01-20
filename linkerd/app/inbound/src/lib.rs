@@ -12,11 +12,11 @@ use futures::future;
 use linkerd2_app_core::{
     classify,
     config::{ProxyConfig, ServerConfig},
-    drain, dst, errors,
+    drain, dst, errors, http_metrics,
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self, fallback,
-        http::{self, client, normalize_uri, orig_proto, strip_header},
+        http::{client, normalize_uri, orig_proto, strip_header},
         identity,
         server::{Protocol as ServerProtocol, Server},
         tap, tcp,
@@ -130,7 +130,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // Registers the stack to be tapped.
                 .push(tap_layer)
                 // Records metrics for each `Target`.
-                .push(http::metrics::Layer::<_, classify::Response>::new(
+                .push(http_metrics::Layer::<_, classify::Response>::new(
                     metrics.http_endpoint,
                 ))
                 .push_per_service(trace_context::layer(
@@ -144,7 +144,7 @@ impl<A: OrigDstAddr> Config<A> {
                 // by tap.
                 .push_http_insert_target()
                 // Records per-route metrics.
-                .push(http::metrics::Layer::<_, classify::Response>::new(
+                .push(http_metrics::Layer::<_, classify::Response>::new(
                     metrics.http_route,
                 ))
                 // Sets the per-route response classifier as a request

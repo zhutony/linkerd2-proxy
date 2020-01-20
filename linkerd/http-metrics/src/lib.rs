@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use tokio_timer::clock;
 
 pub mod classify;
-pub mod handle_time;
 mod report;
 mod service;
 
@@ -19,8 +18,8 @@ where
     C: FmtLabels + Hash + Eq,
 {
     let registry = Arc::new(Mutex::new(Registry::default()));
-    let report = Report::new(retain_idle, registry);
-    (Requests(registry.clone()), report)
+    let report = Report::new(retain_idle, registry.clone());
+    (Requests(registry), report)
 }
 
 #[derive(Debug)]
