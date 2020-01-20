@@ -8,7 +8,7 @@ use linkerd2_app_core::{
     control, dns, proxy, reconnect,
     svc::{self, NewService},
     transport::{connect, tls},
-    ControlHttpMetricsRegistry as Metrics, Error, Never,
+    ControlHttpMetrics as Metrics, Error, Never,
 };
 use tracing::debug;
 
@@ -53,9 +53,7 @@ impl Config {
                         let backoff = control.connect.backoff;
                         move |_| Ok(backoff.stream())
                     }))
-                    .push(proxy::http::metrics::Layer::<_, classify::Response>::new(
-                        metrics,
-                    ))
+                    .push(metrics.into_layer::<classify::Response>())
                     .push_per_service(proxy::grpc::req_body_as_payload::layer())
                     .push(control::add_origin::Layer::new())
                     .push_pending()

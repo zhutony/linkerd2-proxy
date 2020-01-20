@@ -17,7 +17,7 @@ where
 }
 
 /// Reports metrics for prometheus.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Report<T, M>
 where
     T: Hash + Eq,
@@ -25,6 +25,16 @@ where
     prefix: &'static str,
     registry: Arc<Mutex<Registry<T, M>>>,
     retain_idle: Duration,
+}
+
+impl<T: Hash + Eq, M> Clone for Report<T, M> {
+    fn clone(&self) -> Self {
+        Self {
+            prefix: self.prefix.clone(),
+            registry: self.registry.clone(),
+            retain_idle: self.retain_idle,
+        }
+    }
 }
 
 struct Prefixed<'p, N: fmt::Display> {

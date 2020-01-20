@@ -468,18 +468,18 @@ where
     }
 }
 
-// impl<B, C> TryClone for RequestBody<B, C>
-// where
-//     B: Payload + TryClone,
-//     C: Eq + Hash,
-// {
-//     fn try_clone(&self) -> Option<Self> {
-//         self.inner.try_clone().map(|inner| RequestBody {
-//             inner,
-//             metrics: self.metrics.clone(),
-//         })
-//     }
-// }
+impl<B, C> Default for RequestBody<B, C>
+where
+    B: Payload + Default,
+    C: Hash + Eq,
+{
+    fn default() -> Self {
+        Self {
+            metrics: None,
+            inner: B::default(),
+        }
+    }
+}
 
 impl<B, C> Default for ResponseBody<B, C>
 where

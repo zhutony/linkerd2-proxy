@@ -41,30 +41,3 @@ impl fmt::Display for Route {
         self.target.fmt(f)
     }
 }
-
-// === impl Retry ===
-
-// impl<B: TryClone> TryClone for Request<B> {
-//     fn try_clone(&self) -> Option<Self> {
-//         if let Some(body) = self.body().try_clone() {
-//             let mut clone = Request::new(body);
-//             *clone.method_mut() = self.method().clone();
-//             *clone.uri_mut() = self.uri().clone();
-//             *clone.headers_mut() = self.headers().clone();
-//             *clone.version_mut() = self.version();
-
-//             if let Some(ext) = self.extensions().get::<tls::accept::Meta>() {
-//                 clone.extensions_mut().insert(ext.clone());
-//             }
-
-//             // Count retries toward the request's total handle time.
-//             if let Some(ext) = self.extensions().get::<handle_time::Tracker>() {
-//                 clone.extensions_mut().insert(ext.clone());
-//             }
-
-//             Some(clone)
-//         } else {
-//             None
-//         }
-//     }
-// }

@@ -1,5 +1,10 @@
-use crate::{Report, Registry}
-use super::Metrics;
+use super::{ClassMetrics, Metrics, StatusMetrics};
+use crate::{Prefixed, Registry, Report};
+use linkerd2_metrics::{latency, Counter, FmtLabels, FmtMetric, FmtMetrics, Histogram, Metric};
+use std::fmt;
+use std::hash::Hash;
+use tokio_timer::clock;
+use tracing::trace;
 
 struct Status(http::StatusCode);
 
@@ -61,7 +66,7 @@ where
         metric.fmt_help(f)?;
         registry.fmt_by_status(f, metric, |s| &s.latency)?;
 
-        let metric = self.response_total()
+        let metric = self.response_total();
         metric.fmt_help(f)?;
         registry.fmt_by_class(f, metric, |s| &s.total)?;
 

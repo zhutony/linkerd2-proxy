@@ -89,6 +89,7 @@ pub type HttpRouteRetry = http_metrics::Retries<metric_labels::RouteLabels>;
 pub struct ProxyMetrics {
     pub http_handle_time: handle_time::Scope,
     pub http_route: HttpRouteMetrics,
+    pub http_route_actual: HttpRouteMetrics,
     pub http_route_retry: HttpRouteRetry,
     pub http_endpoint: HttpEndpointMetrics,
     pub transport: transport::Metrics,

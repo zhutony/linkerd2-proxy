@@ -19,7 +19,7 @@ use linkerd2_app_core::{
         self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
         tap, tcp, Server,
     },
-    reconnect, router, serve,
+    reconnect, retry, router, serve,
     spans::SpanConverter,
     svc::{self, NewService},
     trace_context,
@@ -27,7 +27,6 @@ use linkerd2_app_core::{
     Conditional, DiscoveryRejected, Error, ProxyMetrics, CANONICAL_DST_HEADER, DST_OVERRIDE_HEADER,
     L5D_CLIENT_ID, L5D_REMOTE_IP, L5D_REQUIRE_ID, L5D_SERVER_ID,
 };
-use linkerd2_retry as retry;
 use linkerd2_service_profiles as profiles;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -246,12 +245,16 @@ impl<A: OrigDstAddr> Config<A> {
                 .check_service::<Concrete<HttpEndpoint>>();
 
             let http_profile_route_proxy = svc::proxies()
+                .check_new_clone_service::<dst::Route>()
                 // Sets an optional retry policy.
-                .push(retry::Layer::new(metrics.http_route_retry))
+                .push(retry::layer(metrics.http_route_retry))
+                .check_new_clone_service::<dst::Route>()
                 // Sets an optional request timeout.
                 .push(http::timeout::layer())
+                .check_new_clone_service::<dst::Route>()
                 // Records per-route metrics.
                 .push(metrics.http_route.into_layer::<classify::Response>())
+                .check_new_clone_service::<dst::Route>()
                 // Sets the per-route response classifier as a request
                 // extension.
                 .push(classify::Layer::new())

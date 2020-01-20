@@ -2,7 +2,7 @@ use super::{LastUpdate, Registry, Report};
 use http;
 use indexmap::IndexMap;
 use linkerd2_http_classify::ClassifyResponse;
-use linkerd2_metrics::{latency, Counter, Histogram};
+use linkerd2_metrics::{latency, Counter, FmtMetrics, Histogram};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio_timer::clock;
 
 mod layer;
+mod report;
 
 type SharedRegistry<T, C> = Arc<Mutex<Registry<T, Metrics<C>>>>;
 
@@ -52,7 +53,10 @@ impl<T: Hash + Eq, C: Hash + Eq> Default for Requests<T, C> {
 }
 
 impl<T: Hash + Eq, C: Hash + Eq> Requests<T, C> {
-    pub fn into_report(self, retain_idle: Duration) -> Report<T, Metrics<C>> {
+    pub fn into_report(self, retain_idle: Duration) -> Report<T, Metrics<C>>
+    where
+        Report<T, Metrics<C>>: FmtMetrics,
+    {
         Report::new(retain_idle, self.0)
     }
 

@@ -1,4 +1,5 @@
 use super::{CanClassify, Classify};
+use linkerd2_stack as stack;
 
 #[derive(Debug, Clone)]
 pub struct Layer(());
@@ -28,10 +29,10 @@ impl<N> tower::layer::Layer<N> for Layer {
     }
 }
 
-impl<T, N> linkerd2_stack::NewService<T> for NewProxy<N>
+impl<T, N> stack::NewService<T> for NewProxy<N>
 where
     T: CanClassify,
-    N: linkerd2_stack::NewService<T>,
+    N: stack::NewService<T>,
 {
     type Service = Proxy<T::Classify, N::Service>;
 
@@ -42,10 +43,10 @@ where
     }
 }
 
-impl<C, P, S, B> linkerd2_stack::Proxy<http::Request<B>, S> for Proxy<C, P>
+impl<C, P, S, B> stack::Proxy<http::Request<B>, S> for Proxy<C, P>
 where
     C: Classify,
-    P: linkerd2_stack::Proxy<http::Request<B>, S>,
+    P: stack::Proxy<http::Request<B>, S>,
     S: tower::Service<P::Request>,
 {
     type Request = P::Request;
