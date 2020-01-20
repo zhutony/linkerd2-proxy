@@ -1,6 +1,8 @@
+pub use self::layer::{Layer, NewProxy, Proxy};
 use http;
 use linkerd2_error::Error;
-use linkerd2_stack as svc;
+
+mod layer;
 
 /// Determines how a request's response should be classified.
 pub trait Classify {
@@ -54,63 +56,4 @@ pub trait CanClassify {
     type Classify: Classify;
 
     fn classify(&self) -> Self::Classify;
-}
-
-#[derive(Debug, Clone)]
-pub struct Layer();
-
-#[derive(Clone, Debug)]
-pub struct NewProxy<M> {
-    inner: M,
-}
-
-#[derive(Clone, Debug)]
-pub struct Proxy<C, P> {
-    classify: C,
-    inner: P,
-}
-
-pub fn layer() -> Layer {
-    Layer()
-}
-
-impl<M> tower::layer::Layer<M> for Layer {
-    type Service = NewProxy<M>;
-
-    fn layer(&self, inner: M) -> Self::Service {
-        Self::Service { inner }
-    }
-}
-
-impl<T, M> svc::NewService<T> for NewProxy<M>
-where
-    T: CanClassify,
-    M: svc::NewService<T>,
-{
-    type Service = Proxy<T::Classify, M::Service>;
-
-    fn new_service(&self, target: T) -> Self::Service {
-        let classify = target.classify();
-        let inner = self.inner.new_service(target);
-        Proxy { classify, inner }
-    }
-}
-
-impl<C, P, S, B> svc::Proxy<http::Request<B>, S> for Proxy<C, P>
-where
-    C: Classify,
-    P: svc::Proxy<http::Request<B>, S>,
-    S: tower::Service<P::Request>,
-{
-    type Request = P::Request;
-    type Response = P::Response;
-    type Error = P::Error;
-    type Future = P::Future;
-
-    fn proxy(&self, svc: &mut S, mut req: http::Request<B>) -> Self::Future {
-        let classify_rsp = self.classify.classify(&req);
-        let _ = req.extensions_mut().insert(classify_rsp);
-
-        self.inner.proxy(svc, req)
-    }
 }

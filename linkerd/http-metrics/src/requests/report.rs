@@ -1,12 +1,7 @@
-use super::{ClassMetrics, Registry, RequestMetrics, StatusMetrics};
-use http;
-use linkerd2_metrics::{latency, Counter, FmtLabels, FmtMetric, FmtMetrics, Histogram, Metric};
-use std::fmt;
-use std::hash::Hash;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio_timer::clock;
-use tracing::trace;
+use crate::{Report, Registry}
+use super::Metrics;
+
+struct Status(http::StatusCode);
 
 impl<T, C> Report<T, Metrics<C>>
 where
@@ -48,31 +43,29 @@ where
             Err(_) => return Ok(()),
             Ok(r) => r,
         };
-
-        let now = clock::now();
-        let since = now - self.retain_idle;
-        registry.retain_since(since);
         trace!(
             prfefix = %self.prefix,
-            ?now,
-            ?since,
             targets = %registry.by_target.len(),
             "Formatting HTTP request metrics",
         );
-        let registry = registry; // Mutability no longer needed.
 
         if registry.by_target.is_empty() {
             return Ok(());
         }
 
-        self.request_total().fmt_help(f)?;
-        registry.fmt_by_target(f, self.request_total(), |s| &s.total)?;
+        let metric = self.request_total();
+        metric.fmt_help(f)?;
+        registry.fmt_by_target(f, metric, |s| &s.total)?;
 
-        self.response_latency_ms().fmt_help(f)?;
-        registry.fmt_by_status(f, self.response_latency_ms(), |s| &s.latency)?;
+        let metric = self.response_latency_ms();
+        metric.fmt_help(f)?;
+        registry.fmt_by_status(f, metric, |s| &s.latency)?;
 
-        self.response_total().fmt_help(f)?;
-        registry.fmt_by_class(f, self.response_total(), |s| &s.total)?;
+        let metric = self.response_total()
+        metric.fmt_help(f)?;
+        registry.fmt_by_class(f, metric, |s| &s.total)?;
+
+        registry.retain_since(clock::now() - self.retain_idle);
 
         Ok(())
     }

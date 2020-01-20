@@ -17,6 +17,7 @@ members = [
     "linkerd/error",
     "linkerd/exp-backoff",
     "linkerd/fallback",
+    "linkerd/http-classify",
     "linkerd/http-metrics",
     "linkerd/identity",
     "linkerd/io",

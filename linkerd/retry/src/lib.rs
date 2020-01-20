@@ -2,8 +2,8 @@ use futures::{Future, Poll};
 use linkerd2_error::Error;
 use linkerd2_stack::{proxy, NewService, Proxy};
 use tower::retry;
-pub use tower::retry::budget::Budget;
-pub use tower::util::{Oneshot, ServiceExt};
+pub use tower::retry::{budget::Budget, Policy};
+use tower::util::{Oneshot, ServiceExt};
 use tracing::trace;
 
 pub trait NewPolicy<T> {

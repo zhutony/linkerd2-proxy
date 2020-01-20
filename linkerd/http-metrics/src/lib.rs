@@ -1,49 +1,12 @@
-use http;
+pub use self::{requests::Requests, retries::Retries};
 use indexmap::IndexMap;
-use linkerd2_metrics::{latency, Counter, FmtLabels, Histogram};
+use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio_timer::clock;
 
-pub mod classify;
-mod report;
-mod service;
-
-pub use self::{report::Report, service::Layer};
-
-pub fn new<T, C>(retain_idle: Duration) -> (Requests<T, C>, Report<T, RequestMetrics<C>>)
-where
-    T: FmtLabels + Clone + Hash + Eq,
-    C: FmtLabels + Hash + Eq,
-{
-    let registry = Arc::new(Mutex::new(Registry::default()));
-    let report = Report::new(retain_idle, registry.clone());
-    (Requests(registry), report)
-}
-
-#[derive(Debug)]
-pub struct Requests<T, C>(Arc<Mutex<Registry<T, RequestMetrics<C>>>>)
-where
-    T: Hash + Eq,
-    C: Hash + Eq;
-
-#[derive(Debug)]
-pub struct Retries<T>(Arc<Mutex<Registry<T, RetryMetrics>>>)
-where
-    T: Hash + Eq;
-
-impl<T: Hash + Eq, C: Hash + Eq> Clone for Requests<T, C> {
-    fn clone(&self) -> Self {
-        Requests(self.0.clone())
-    }
-}
-
-impl<T: Hash + Eq> Clone for Retries<T> {
-    fn clone(&self) -> Self {
-        Retries(self.0.clone())
-    }
-}
+pub mod requests;
+pub mod retries;
 
 #[derive(Debug)]
 struct Registry<T, M>
@@ -53,44 +16,25 @@ where
     by_target: IndexMap<T, Arc<Mutex<M>>>,
 }
 
+/// Reports metrics for prometheus.
+#[derive(Clone, Debug)]
+pub struct Report<T, M>
+where
+    T: Hash + Eq,
+{
+    prefix: &'static str,
+    registry: Arc<Mutex<Registry<T, M>>>,
+    retain_idle: Duration,
+}
+
+struct Prefixed<'p, N: fmt::Display> {
+    prefix: &'p str,
+    name: N,
+}
+
 trait LastUpdate {
     fn last_update(&self) -> Instant;
 }
-
-#[derive(Debug)]
-pub struct RequestMetrics<C>
-where
-    C: Hash + Eq,
-{
-    last_update: Instant,
-    total: Counter,
-    by_status: IndexMap<Option<http::StatusCode>, StatusMetrics<C>>,
-}
-
-#[derive(Debug)]
-pub struct RetryMetrics {
-    last_update: Instant,
-    skipped: Counter,
-}
-
-#[derive(Debug)]
-struct StatusMetrics<C>
-where
-    C: Hash + Eq,
-{
-    latency: Histogram<latency::Ms>,
-    by_class: IndexMap<C, ClassMetrics>,
-}
-
-#[derive(Debug, Default)]
-pub struct ClassMetrics {
-    total: Counter,
-}
-
-// #[derive(Debug, PartialEq, Eq, Hash)]
-// enum RetrySkipped {
-//     Budget,
-// }
 
 impl<T, M> Default for Registry<T, M>
 where
@@ -117,52 +61,41 @@ where
     }
 }
 
-impl<C> Default for RequestMetrics<C>
+impl<T, M> Report<T, M>
 where
-    C: Hash + Eq,
+    T: Hash + Eq,
 {
-    fn default() -> Self {
+    fn new(retain_idle: Duration, registry: Arc<Mutex<Registry<T, M>>>) -> Self {
         Self {
-            last_update: clock::now(),
-            total: Counter::default(),
-            by_status: IndexMap::default(),
+            prefix: "",
+            registry,
+            retain_idle,
+        }
+    }
+
+    pub fn with_prefix(self, prefix: &'static str) -> Self {
+        if prefix.is_empty() {
+            return self;
+        }
+
+        Self { prefix, ..self }
+    }
+
+    fn prefix_key<N: fmt::Display>(&self, name: N) -> Prefixed<'_, N> {
+        Prefixed {
+            prefix: &self.prefix,
+            name,
         }
     }
 }
 
-impl<C> LastUpdate for RequestMetrics<C>
-where
-    C: Hash + Eq,
-{
-    fn last_update(&self) -> Instant {
-        self.last_update
-    }
-}
-
-impl Default for RetryMetrics {
-    fn default() -> Self {
-        Self {
-            last_update: clock::now(),
-            skipped: Counter::default(),
+impl<'p, N: fmt::Display> fmt::Display for Prefixed<'p, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.prefix.is_empty() {
+            return self.name.fmt(f);
         }
-    }
-}
 
-impl LastUpdate for RetryMetrics {
-    fn last_update(&self) -> Instant {
-        self.last_update
-    }
-}
-
-impl<C> Default for StatusMetrics<C>
-where
-    C: Hash + Eq,
-{
-    fn default() -> Self {
-        Self {
-            latency: Histogram::default(),
-            by_class: IndexMap::default(),
-        }
+        write!(f, "{}_{}", self.prefix, self.name)
     }
 }
 

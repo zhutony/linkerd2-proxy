@@ -1,11 +1,9 @@
 use super::classify;
 use crate::profiles;
-use http;
 use linkerd2_addr::Addr;
-use linkerd2_http_metrics::classify::{CanClassify, Classify, ClassifyEos, ClassifyResponse};
+use linkerd2_http_classify::CanClassify;
 use linkerd2_proxy_http::timeout;
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -13,12 +11,6 @@ pub struct Route {
     pub target: Addr,
     pub route: profiles::Route,
     pub direction: super::metric_labels::Direction,
-}
-
-#[derive(Clone, Debug)]
-pub struct Retry {
-    budget: Arc<tower::retry::budget::Budget>,
-    response_classes: profiles::ResponseClasses,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -51,34 +43,6 @@ impl fmt::Display for Route {
 }
 
 // === impl Retry ===
-
-impl Retry {
-    pub fn retryability<A, B, E>(
-        &self,
-        req: &http::Request<A>,
-        result: Result<&http::Response<B>, &E>,
-    ) -> Retryability {
-        let retryable = match result {
-            Err(_) => false,
-            Ok(rsp) => classify::Request::from(self.response_classes.clone())
-                .classify(req)
-                .start(rsp)
-                .eos(None)
-                .is_failure(),
-        };
-
-        if !retryable {
-            self.budget.deposit();
-            return Retryability::NotRetryable;
-        }
-
-        if self.budget.withdraw().is_err() {
-            return Retryability::Exhausted;
-        }
-
-        Retryability::Retryable
-    }
-}
 
 // impl<B: TryClone> TryClone for Request<B> {
 //     fn try_clone(&self) -> Option<Self> {

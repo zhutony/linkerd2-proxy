@@ -13,7 +13,7 @@ use futures::future;
 use linkerd2_app_core::{
     classify,
     config::{ProxyConfig, ServerConfig},
-    dns, drain, dst, errors, http_metrics,
+    dns, drain, dst, errors,
     opencensus::proto::trace::v1 as oc,
     proxy::{
         self, core::resolve::Resolve, discover, fallback, http, identity, resolve::map_endpoint,
@@ -132,9 +132,7 @@ impl<A: OrigDstAddr> Config<A> {
             let http_endpoint = {
                 let observability = svc::layers()
                     .push(tap_layer.clone())
-                    .push(http_metrics::Layer::<_, classify::Response>::new(
-                        metrics.http_endpoint.clone(),
-                    ))
+                    .push(metrics.http_endpoint.into_layer::<classify::Response>())
                     .push_per_service(trace_context::layer(
                         span_sink
                             .clone()
@@ -253,12 +251,10 @@ impl<A: OrigDstAddr> Config<A> {
                 // Sets an optional request timeout.
                 .push(http::timeout::layer())
                 // Records per-route metrics.
-                .push(http_metrics::Layer::<_, classify::Response>::new(
-                    metrics.http_route,
-                ))
+                .push(metrics.http_route.into_layer::<classify::Response>())
                 // Sets the per-route response classifier as a request
                 // extension.
-                .push(classify::layer())
+                .push(classify::Layer::new())
                 .check_new_clone_service::<dst::Route>();
 
             // Routes `Logical` targets to a cached `Profile` stack, i.e. so
