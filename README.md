@@ -1,3 +1,5 @@
+# adding GraphQL interface
+
 ![linkerd2][logo]
 
 <!-- TODO [![Build Status][ci-badge]][ci] -->
